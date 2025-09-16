@@ -1,0 +1,7 @@
+{
+  "version": 4,
+  "base_model": "v3_enhanced",
+  "evaluator": "extinction_focused",
+  "weights": "70% extinction, 30% material",
+  "expected_win_rate": 0.96
+}

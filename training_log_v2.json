@@ -1,0 +1,202 @@
+[
+  {
+    "iteration": 1,
+    "avg_loss": 0.9939906116735949,
+    "white_wins": 18,
+    "black_wins": 12,
+    "draws": 0,
+    "avg_game_length": 34.46666666666667,
+    "time": 13.507204532623291,
+    "exploration_rate": 0.3
+  },
+  {
+    "iteration": 2,
+    "avg_loss": 1.0604058495537616,
+    "white_wins": 15,
+    "black_wins": 15,
+    "draws": 0,
+    "avg_game_length": 34.766666666666666,
+    "time": 9.728523254394531,
+    "exploration_rate": 0.27999999999999997
+  },
+  {
+    "iteration": 3,
+    "avg_loss": 0.9927414475743467,
+    "white_wins": 11,
+    "black_wins": 19,
+    "draws": 0,
+    "avg_game_length": 33.1,
+    "time": 9.36950945854187,
+    "exploration_rate": 0.26
+  },
+  {
+    "iteration": 4,
+    "avg_loss": 0.8986431226038896,
+    "white_wins": 10,
+    "black_wins": 20,
+    "draws": 0,
+    "avg_game_length": 34.6,
+    "time": 10.536811590194702,
+    "exploration_rate": 0.24
+  },
+  {
+    "iteration": 5,
+    "avg_loss": 0.9594658555200832,
+    "white_wins": 11,
+    "black_wins": 19,
+    "draws": 0,
+    "avg_game_length": 41.833333333333336,
+    "time": 13.571321487426758,
+    "exploration_rate": 0.21999999999999997
+  },
+  {
+    "iteration": 6,
+    "avg_loss": 1.0362894139602854,
+    "white_wins": 17,
+    "black_wins": 13,
+    "draws": 0,
+    "avg_game_length": 36.1,
+    "time": 20.707248210906982,
+    "exploration_rate": 0.19999999999999998
+  },
+  {
+    "iteration": 7,
+    "avg_loss": 0.9313387896066881,
+    "white_wins": 20,
+    "black_wins": 10,
+    "draws": 0,
+    "avg_game_length": 34.13333333333333,
+    "time": 10.924572706222534,
+    "exploration_rate": 0.18
+  },
+  {
+    "iteration": 8,
+    "avg_loss": 0.791379741123905,
+    "white_wins": 21,
+    "black_wins": 9,
+    "draws": 0,
+    "avg_game_length": 33.7,
+    "time": 10.973264455795288,
+    "exploration_rate": 0.15999999999999998
+  },
+  {
+    "iteration": 9,
+    "avg_loss": 1.010094879458245,
+    "white_wins": 18,
+    "black_wins": 12,
+    "draws": 0,
+    "avg_game_length": 29.733333333333334,
+    "time": 9.648280143737793,
+    "exploration_rate": 0.13999999999999999
+  },
+  {
+    "iteration": 10,
+    "avg_loss": 1.1033672727802173,
+    "white_wins": 10,
+    "black_wins": 20,
+    "draws": 0,
+    "avg_game_length": 28.733333333333334,
+    "time": 9.34320592880249,
+    "exploration_rate": 0.12
+  },
+  {
+    "iteration": 11,
+    "avg_loss": 0.9906420016469342,
+    "white_wins": 20,
+    "black_wins": 10,
+    "draws": 0,
+    "avg_game_length": 33.13333333333333,
+    "time": 11.639150381088257,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 12,
+    "avg_loss": 1.044703874582627,
+    "white_wins": 14,
+    "black_wins": 16,
+    "draws": 0,
+    "avg_game_length": 28.6,
+    "time": 9.841323375701904,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 13,
+    "avg_loss": 1.0128569527702465,
+    "white_wins": 17,
+    "black_wins": 13,
+    "draws": 0,
+    "avg_game_length": 27.033333333333335,
+    "time": 9.858930826187134,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 14,
+    "avg_loss": 1.0322648875926776,
+    "white_wins": 14,
+    "black_wins": 16,
+    "draws": 0,
+    "avg_game_length": 34.266666666666666,
+    "time": 12.014241933822632,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 15,
+    "avg_loss": 1.0170573909371672,
+    "white_wins": 16,
+    "black_wins": 14,
+    "draws": 0,
+    "avg_game_length": 29.933333333333334,
+    "time": 10.369794845581055,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 16,
+    "avg_loss": 0.9613268859833278,
+    "white_wins": 19,
+    "black_wins": 11,
+    "draws": 0,
+    "avg_game_length": 31.9,
+    "time": 15.527636766433716,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 17,
+    "avg_loss": 1.0132492435408191,
+    "white_wins": 16,
+    "black_wins": 14,
+    "draws": 0,
+    "avg_game_length": 32.0,
+    "time": 28.36652374267578,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 18,
+    "avg_loss": 0.9840804980065497,
+    "white_wins": 13,
+    "black_wins": 17,
+    "draws": 0,
+    "avg_game_length": 33.63333333333333,
+    "time": 29.142104148864746,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 19,
+    "avg_loss": 1.0140176194997625,
+    "white_wins": 17,
+    "black_wins": 13,
+    "draws": 0,
+    "avg_game_length": 31.1,
+    "time": 27.97396421432495,
+    "exploration_rate": 0.1
+  },
+  {
+    "iteration": 20,
+    "avg_loss": 1.007963616229691,
+    "white_wins": 14,
+    "black_wins": 16,
+    "draws": 0,
+    "avg_game_length": 32.333333333333336,
+    "time": 27.088330507278442,
+    "exploration_rate": 0.1
+  }
+]

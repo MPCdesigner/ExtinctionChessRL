@@ -1,0 +1,12 @@
+{
+  "version_1": {
+    "win_rate": 0.92,
+    "version": 1
+  },
+  "version_2": {
+    "win_rate": 0.91,
+    "version": 2,
+    "additional_training": 20
+  },
+  "improvement": -0.010000000000000009
+}

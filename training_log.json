@@ -1,0 +1,102 @@
+[
+  {
+    "iteration": 1,
+    "avg_loss": 1.0264179447184074,
+    "white_wins": 12,
+    "black_wins": 8,
+    "draws": 0,
+    "avg_game_length": 35.0,
+    "time": 7.889343976974487,
+    "exploration_rate": 0.3
+  },
+  {
+    "iteration": 2,
+    "avg_loss": 0.9565204235426655,
+    "white_wins": 13,
+    "black_wins": 7,
+    "draws": 0,
+    "avg_game_length": 28.45,
+    "time": 5.17002534866333,
+    "exploration_rate": 0.27999999999999997
+  },
+  {
+    "iteration": 3,
+    "avg_loss": 1.0968193631879302,
+    "white_wins": 10,
+    "black_wins": 10,
+    "draws": 0,
+    "avg_game_length": 30.1,
+    "time": 5.578322172164917,
+    "exploration_rate": 0.26
+  },
+  {
+    "iteration": 4,
+    "avg_loss": 1.0430085456664204,
+    "white_wins": 9,
+    "black_wins": 11,
+    "draws": 0,
+    "avg_game_length": 42.65,
+    "time": 9.013144493103027,
+    "exploration_rate": 0.24
+  },
+  {
+    "iteration": 5,
+    "avg_loss": 1.0197383704953011,
+    "white_wins": 8,
+    "black_wins": 12,
+    "draws": 0,
+    "avg_game_length": 37.4,
+    "time": 8.201919317245483,
+    "exploration_rate": 0.21999999999999997
+  },
+  {
+    "iteration": 6,
+    "avg_loss": 0.9983242724416443,
+    "white_wins": 8,
+    "black_wins": 12,
+    "draws": 0,
+    "avg_game_length": 38.3,
+    "time": 17.441272974014282,
+    "exploration_rate": 0.19999999999999998
+  },
+  {
+    "iteration": 7,
+    "avg_loss": 1.0374964524248913,
+    "white_wins": 11,
+    "black_wins": 9,
+    "draws": 0,
+    "avg_game_length": 32.65,
+    "time": 10.37929105758667,
+    "exploration_rate": 0.18
+  },
+  {
+    "iteration": 8,
+    "avg_loss": 0.943986021775771,
+    "white_wins": 8,
+    "black_wins": 12,
+    "draws": 0,
+    "avg_game_length": 36.8,
+    "time": 9.112666130065918,
+    "exploration_rate": 0.15999999999999998
+  },
+  {
+    "iteration": 9,
+    "avg_loss": 1.0721261546224983,
+    "white_wins": 11,
+    "black_wins": 9,
+    "draws": 0,
+    "avg_game_length": 36.75,
+    "time": 19.112565279006958,
+    "exploration_rate": 0.13999999999999999
+  },
+  {
+    "iteration": 10,
+    "avg_loss": 1.024934873901603,
+    "white_wins": 11,
+    "black_wins": 9,
+    "draws": 0,
+    "avg_game_length": 34.15,
+    "time": 19.658063888549805,
+    "exploration_rate": 0.12
+  }
+]
