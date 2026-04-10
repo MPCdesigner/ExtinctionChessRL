@@ -10,6 +10,7 @@ from extinction_chess import ExtinctionChess, Position, Move, Color, PieceType
 from extinction_chess_gui import ChessGUI
 from simple_evaluator import SimpleNeuralNetwork, NetworkConfig, PositionEvaluator
 from self_play_trainer import SelfPlayAgent
+from create_v4_model import ExtinctionFocusedEvaluator
 
 
 class PlayVsAI(ChessGUI):
@@ -148,7 +149,9 @@ def main():
                        help='Your color: white or black (default: white)')
     parser.add_argument('--version', type=int, default=None,
                        help='Model version to load (1, 2, etc.)')
-    
+    parser.add_argument('--depth', type=int, default=3,
+                       help='Search depth for minimax (default: 3, 0=no search)')
+
     args = parser.parse_args()
     
     # Determine model path
@@ -187,13 +190,40 @@ def main():
     
     # Load the model
     print(f"Loading AI model from {model_path}...")
-    config = NetworkConfig(input_size=39, hidden_sizes=[128, 64, 32])
-    network = SimpleNeuralNetwork(config)
-    network.load(model_path)
-    
-    # Create AI agent
-    evaluator = PositionEvaluator(network)
-    ai_agent = SelfPlayAgent(evaluator, exploration_rate=0)  # No exploration during play
+
+    if model_path.endswith('.pt'):
+        # PyTorch model — detect CNN vs MLP from checkpoint metadata
+        import torch
+        data = torch.load(model_path, weights_only=False, map_location="cpu")
+        meta = data.get("metadata", {})
+
+        if meta.get("model_type") == "cnn":
+            from torch_model import ChessCNN, CNNEvaluator
+            model, meta = ChessCNN.load_checkpoint(model_path)
+            evaluator = CNNEvaluator(model, device="cpu")
+            print(f"Loaded CNN model (meta: {meta})")
+        else:
+            from torch_model import ChessNet, TorchEvaluator
+            model, meta = ChessNet.load_checkpoint(model_path, input_size=39, hidden_sizes=[256, 128, 64])
+            evaluator = TorchEvaluator(model, device="cpu")
+            print(f"Loaded MLP model (meta: {meta})")
+    else:
+        # Numpy model
+        config = NetworkConfig(input_size=39, hidden_sizes=[128, 64, 32])
+        network = SimpleNeuralNetwork(config)
+        network.load(model_path)
+        if args.version == 4:
+            evaluator = ExtinctionFocusedEvaluator(network)
+        else:
+            evaluator = PositionEvaluator(network)
+
+    if args.depth > 0:
+        from torch_model import SearchAgent
+        ai_agent = SearchAgent(evaluator, depth=args.depth)
+        print(f"Using minimax search (depth={args.depth})")
+    else:
+        ai_agent = SelfPlayAgent(evaluator, exploration_rate=0)
+        print("Using raw evaluation (no search)")
     
     # Determine colors
     human_color = Color.WHITE if args.color.lower() == 'white' else Color.BLACK

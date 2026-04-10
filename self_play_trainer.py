@@ -10,10 +10,40 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import json
 import os
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 
 from extinction_chess import ExtinctionChess, Color, Move
 from state_encoder import StateEncoder, MoveEncoder
 from simple_evaluator import SimpleNeuralNetwork, NetworkConfig, PositionEvaluator
+
+
+# ── Per-worker state for parallel self-play ──────────────────────────────────
+
+_worker_agent: Optional["SelfPlayAgent"] = None
+
+
+def _init_worker(network_data: dict, exploration_rate: float):
+    """Initializer for each pool worker — reconstructs the agent from
+    serialized network weights so we avoid pickling issues."""
+    global _worker_agent
+    config = NetworkConfig(**network_data["config"])
+    network = SimpleNeuralNetwork(config)
+    network.layers = [np.array(w) for w in network_data["weights"]]
+    network.biases = [np.array(b) for b in network_data["biases"]]
+    evaluator = PositionEvaluator(network)
+    _worker_agent = SelfPlayAgent(evaluator, exploration_rate=exploration_rate)
+
+
+def _play_one_game_worker(_unused) -> dict:
+    """Worker function — plays one self-play game and returns a
+    serialisable dict (GameRecord fields)."""
+    record = _worker_agent.play_game()
+    return {
+        "positions": [p.tolist() for p in record.positions],
+        "moves": record.moves,
+        "outcome": record.outcome,
+    }
 
 
 @dataclass
@@ -66,13 +96,21 @@ class SelfPlayAgent:
             game_copy.board = game.board.copy()
             game_copy.current_player = game.current_player
             game_copy.game_over = game.game_over
-            
+
             # Make the move and evaluate
             if game_copy.make_move(move):
-                score = self.evaluator.evaluate(game_copy)
-                # Negate score if black's turn (we want best move for current player)
-                if game.current_player == Color.BLACK:
-                    score = -score
+                if game_copy.game_over:
+                    # Terminal: game engine doesn't switch current_player on
+                    # game end, so current_player == mover.  Score directly.
+                    if game_copy.winner == game.current_player:
+                        score = 1.0
+                    elif game_copy.winner is not None:
+                        score = -1.0
+                    else:
+                        score = 0.0
+                else:
+                    # Non-terminal: current_player switched to opponent, negate
+                    score = -self.evaluator.evaluate(game_copy)
                 move_scores.append(score)
             else:
                 move_scores.append(-2)  # Invalid move
@@ -146,23 +184,82 @@ class Trainer:
         # Create save directory
         os.makedirs(save_dir, exist_ok=True)
     
-    def generate_self_play_games(self, num_games: int = 10) -> List[GameRecord]:
-        """Generate multiple self-play games"""
+    def _serialize_network(self) -> dict:
+        """Serialize network weights to a plain dict for passing to workers."""
+        return {
+            "config": {
+                "input_size": self.network.config.input_size,
+                "hidden_sizes": self.network.config.hidden_sizes,
+                "learning_rate": self.network.config.learning_rate,
+                "activation": self.network.config.activation,
+            },
+            "weights": [w.tolist() for w in self.network.layers],
+            "biases": [b.tolist() for b in self.network.biases],
+        }
+
+    def generate_self_play_games(self, num_games: int = 10,
+                                  num_workers: int = 0) -> List[GameRecord]:
+        """Generate multiple self-play games.
+
+        Args:
+            num_games: Number of games to generate.
+            num_workers: Number of parallel worker processes.
+                0 (default) = auto-detect (cpu_count).
+                1 = sequential (no multiprocessing overhead).
+        """
+        if num_workers == 0:
+            num_workers = max(1, mp.cpu_count() - 1)
+
+        # Fall back to sequential when only one worker requested
+        if num_workers == 1:
+            return self._generate_sequential(num_games)
+
+        return self._generate_parallel(num_games, num_workers)
+
+    def _generate_sequential(self, num_games: int) -> List[GameRecord]:
+        """Original sequential game generation."""
         games = []
-        
-        print(f"Generating {num_games} self-play games...")
+        print(f"Generating {num_games} self-play games (sequential)...")
         for i in range(num_games):
             if (i + 1) % 10 == 0:
                 print(f"  Game {i + 1}/{num_games}")
-            
+
             game_record = self.agent.play_game()
             games.append(game_record)
-            
-            # Print game outcome
+
             outcome_str = "White wins" if game_record.outcome > 0 else \
                          "Black wins" if game_record.outcome < 0 else "Draw"
             print(f"    Game {i + 1}: {len(game_record.positions)} moves, {outcome_str}")
-        
+        return games
+
+    def _generate_parallel(self, num_games: int,
+                           num_workers: int) -> List[GameRecord]:
+        """Parallel game generation using a process pool."""
+        print(f"Generating {num_games} self-play games "
+              f"({num_workers} workers)...")
+
+        network_data = self._serialize_network()
+        exploration_rate = self.agent.exploration_rate
+
+        with mp.Pool(
+            processes=num_workers,
+            initializer=_init_worker,
+            initargs=(network_data, exploration_rate),
+        ) as pool:
+            results = pool.map(_play_one_game_worker, range(num_games))
+
+        games = []
+        for i, r in enumerate(results, 1):
+            record = GameRecord(
+                positions=[np.array(p, dtype=np.float32) for p in r["positions"]],
+                moves=r["moves"],
+                outcome=r["outcome"],
+            )
+            games.append(record)
+            outcome_str = "White wins" if record.outcome > 0 else \
+                         "Black wins" if record.outcome < 0 else "Draw"
+            print(f"    Game {i}: {len(record.positions)} moves, {outcome_str}")
+
         return games
     
     def train_on_games(self, games: List[GameRecord], epochs: int = 10) -> float:

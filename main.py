@@ -1,5 +1,5 @@
-from src.extinction_chess import ExtinctionChess
-from src.extinction_chess_display import ConsoleDisplay, CompactDisplay
+from extinction_chess import ExtinctionChess
+from extinction_chess_display import ConsoleDisplay, CompactDisplay
 
 # Create game instance
 game = ExtinctionChess()
