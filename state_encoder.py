@@ -44,9 +44,13 @@ class StateEncoder:
         Encode the current board state as a tensor
         Returns: numpy array of shape (14, 8, 8)
         """
-        tensor = np.zeros((self.num_channels, self.board_size, self.board_size), 
+        # Use C++ fast path if available
+        if hasattr(game, 'encode_board'):
+            return np.asarray(game.encode_board(), dtype=np.float32)
+
+        tensor = np.zeros((self.num_channels, self.board_size, self.board_size),
                          dtype=np.float32)
-        
+
         # Encode pieces
         for rank in range(8):
             for file in range(8):
@@ -55,15 +59,15 @@ class StateEncoder:
                 if piece:
                     channel = self.piece_channels[(piece.piece_type, piece.color)]
                     tensor[channel, rank, file] = 1.0
-        
+
         # Channel 12: Current player (1 for white's turn, 0 for black's turn)
         if game.current_player == Color.WHITE:
             tensor[12, :, :] = 1.0
-        
+
         # Channel 13: Endangered pieces (pieces with only 1 left)
         white_endangered = game.get_endangered_pieces(Color.WHITE)
         black_endangered = game.get_endangered_pieces(Color.BLACK)
-        
+
         for rank in range(8):
             for file in range(8):
                 pos = Position(rank, file)
@@ -72,7 +76,7 @@ class StateEncoder:
                     if ((piece.color == Color.WHITE and piece.piece_type in white_endangered) or
                         (piece.color == Color.BLACK and piece.piece_type in black_endangered)):
                         tensor[13, rank, file] = 1.0
-        
+
         return tensor
     
     def encode_move(self, from_pos: Position, to_pos: Position, 
@@ -115,43 +119,47 @@ class StateEncoder:
         Extract simple hand-crafted features for a basic evaluator
         This is easier to train than raw board representation
         """
+        # Use C++ fast path if available
+        if hasattr(game, 'get_simple_features'):
+            return np.asarray(game.get_simple_features(), dtype=np.float32)
+
         features = []
-        
+
         # Material count for each piece type (normalized)
         for color in [Color.WHITE, Color.BLACK]:
             counts = game.board.get_piece_count(color)
             for piece_type in PieceType:
                 features.append(counts[piece_type] / 8.0)  # Normalize by max reasonable count
-        
+
         # Endangered pieces (binary features)
         white_endangered = game.get_endangered_pieces(Color.WHITE)
         black_endangered = game.get_endangered_pieces(Color.BLACK)
-        
+
         for piece_type in PieceType:
             features.append(1.0 if piece_type in white_endangered else 0.0)
             features.append(1.0 if piece_type in black_endangered else 0.0)
-        
+
         # Extinct pieces (binary features)
         white_extinct = game.get_extinct_pieces(Color.WHITE)
         black_extinct = game.get_extinct_pieces(Color.BLACK)
-        
+
         for piece_type in PieceType:
             features.append(1.0 if piece_type in white_extinct else 0.0)
             features.append(1.0 if piece_type in black_extinct else 0.0)
-        
+
         # Current player
         features.append(1.0 if game.current_player == Color.WHITE else 0.0)
-        
+
         # Number of legal moves (mobility)
         features.append(len(game.get_legal_moves()) / 100.0)  # Normalize
-        
+
         # Game phase (early/mid/late based on piece count)
-        total_pieces = sum(counts[pt] for counts in 
-                          [game.board.get_piece_count(Color.WHITE), 
+        total_pieces = sum(counts[pt] for counts in
+                          [game.board.get_piece_count(Color.WHITE),
                            game.board.get_piece_count(Color.BLACK)]
                           for pt in PieceType)
         features.append(total_pieces / 32.0)  # Normalize by starting pieces
-        
+
         return np.array(features, dtype=np.float32)
     
     def create_training_batch(self, games_data: List[Tuple]) -> Tuple[np.ndarray, np.ndarray]:

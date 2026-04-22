@@ -504,3 +504,16 @@ class ExtinctionChess:
         """Return list of piece types that are extinct (0 left) for given color"""
         counts = self.board.get_piece_count(color)
         return [piece_type for piece_type, count in counts.items() if count == 0]
+
+
+# ── Override with C++ engine if available ───────────────────────────────────
+# This replaces the Python classes above with the fast C++ equivalents.
+# All existing imports like `from extinction_chess import ExtinctionChess`
+# will get the C++ version automatically.
+try:
+    from _ext_chess import (
+        ExtinctionChess, Board, Position, Move, Piece,  # noqa: F811
+        Color, PieceType,                                # noqa: F811
+    )
+except ImportError:
+    pass
