@@ -170,7 +170,7 @@ class AlphaZeroAgent:
 
     def select_move(self, game, temperature=0):
         from alphazero import mcts_search
-        move_visits = mcts_search(
+        move_visits, _ = mcts_search(
             game, self.evaluator,
             num_simulations=self.num_simulations,
             dirichlet_alpha=0, noise_weight=0,  # no noise for play

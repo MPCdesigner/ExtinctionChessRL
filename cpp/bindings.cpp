@@ -2,6 +2,8 @@
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
 #include "engine.h"
+#include "mcts.h"
+#include "self_play.h"
 
 namespace py = pybind11;
 using namespace ext;
@@ -321,5 +323,143 @@ PYBIND11_MODULE(_ext_chess, m) {
             g.over = false;
             g.winner = -1;
             g.draw_reason.clear();
+        });
+
+    // ── MCTS ──────────────────────────────────────────────────────────────
+
+    m.def("move_to_index", [](const Move& m) {
+        return ext::move_to_index(m);
+    }, py::arg("move"), "Convert a Move to a policy index in [0, 4864)");
+
+    py::class_<MCTS>(m, "MCTS")
+        .def(py::init<const Game&, int, float, float, float, bool, int>(),
+             py::arg("game"),
+             py::arg("num_simulations") = 800,
+             py::arg("c_puct") = 2.5f,
+             py::arg("dirichlet_alpha") = 0.3f,
+             py::arg("noise_weight") = 0.25f,
+             py::arg("tactical_shortcuts") = true,
+             py::arg("batch_size") = 8)
+
+        .def("select_leaves", [](MCTS& mcts, int max_leaves) {
+            // Allocate output buffer
+            py::array_t<float> boards({max_leaves, 14, 8, 8});
+            auto buf = boards.mutable_data();
+            int num_leaves = mcts.select_leaves(buf);
+            // Return only the filled portion
+            if (num_leaves == 0) {
+                return py::array_t<float>({0, 14, 8, 8});
+            }
+            // Slice to actual number of leaves
+            py::array_t<float> result({num_leaves, 14, 8, 8});
+            std::memcpy(result.mutable_data(), buf,
+                        num_leaves * 14 * 64 * sizeof(float));
+            return result;
+        }, py::arg("max_leaves") = 8)
+
+        .def("process_results", [](MCTS& mcts,
+                                   py::array_t<float, py::array::c_style> policies,
+                                   py::array_t<float, py::array::c_style> values) {
+            auto p = policies.unchecked<2>();  // (N, 4864)
+            auto v = values.unchecked<1>();    // (N,)
+            int n = static_cast<int>(p.shape(0));
+            mcts.process_results(policies.data(), values.data(), n);
+        }, py::arg("policies"), py::arg("values"))
+
+        .def("is_done", &MCTS::is_done)
+
+        .def("get_results", &MCTS::get_results,
+             "Returns list of (policy_index, visit_count) pairs")
+
+        .def("get_move_results", &MCTS::get_move_results,
+             "Returns list of (from_sq, to_sq, promo, visit_count) tuples")
+
+        // Convenience: run root expansion separately (first NN call)
+        .def("expand_root", [](MCTS& mcts,
+                               py::array_t<float, py::array::c_style> policy_logits) {
+            auto p = policy_logits.unchecked<1>();  // (4864,)
+            mcts.expand_root(policy_logits.data());
+        }, py::arg("policy_logits"))
+
+        .def_property_readonly("sims_done", [](const MCTS& m) {
+            // Access via is_done check
+            return m.is_done();
+        });
+
+    // ── SelfPlayManager ──────────────────────────────────────────────────
+
+    py::class_<SelfPlayManager>(m, "SelfPlayManager")
+        .def(py::init<int, int, int, float, float, float, bool, int, int, int>(),
+             py::arg("num_parallel_games"),
+             py::arg("total_games"),
+             py::arg("num_simulations") = 800,
+             py::arg("c_puct") = 2.5f,
+             py::arg("dirichlet_alpha") = 0.3f,
+             py::arg("noise_weight") = 0.25f,
+             py::arg("tactical_shortcuts") = true,
+             py::arg("temp_threshold") = 15,
+             py::arg("max_moves") = 200,
+             py::arg("mcts_batch_size") = 8)
+
+        .def("collect_leaves", [](SelfPlayManager& mgr, int max_batch) {
+            // Allocate output buffer
+            py::array_t<float> boards({max_batch, 14, 8, 8});
+            auto buf = boards.mutable_data();
+            int num_leaves = mgr.collect_leaves(buf, max_batch);
+            if (num_leaves == 0) {
+                return py::array_t<float>({0, 14, 8, 8});
+            }
+            // Return only the filled portion
+            py::array_t<float> result({num_leaves, 14, 8, 8});
+            std::memcpy(result.mutable_data(), buf,
+                        num_leaves * 14 * 64 * sizeof(float));
+            return result;
+        }, py::arg("max_batch") = 256)
+
+        .def("process_results", [](SelfPlayManager& mgr,
+                                   py::array_t<float, py::array::c_style> policies,
+                                   py::array_t<float, py::array::c_style> values) {
+            int n = static_cast<int>(policies.shape(0));
+            mgr.process_results(policies.data(), values.data(), n);
+        }, py::arg("policies"), py::arg("values"))
+
+        .def("is_done", &SelfPlayManager::is_done)
+        .def("games_completed", &SelfPlayManager::games_completed)
+        .def("games_active", &SelfPlayManager::games_active)
+
+        .def("get_results", [](const SelfPlayManager& mgr) {
+            auto& records = mgr.get_results();
+            py::list result;
+            for (auto& rec : records) {
+                py::dict d;
+                // Convert boards: list of (14*64,) float vectors
+                py::list boards_list;
+                for (auto& b : rec.boards) {
+                    py::array_t<float> arr(static_cast<py::ssize_t>(b.size()));
+                    std::memcpy(arr.mutable_data(), b.data(), b.size() * sizeof(float));
+                    boards_list.append(arr);
+                }
+                d["boards"] = boards_list;
+
+                // Convert policies: list of (4864,) float vectors
+                py::list policies_list;
+                for (auto& p : rec.policies) {
+                    py::array_t<float> arr(static_cast<py::ssize_t>(p.size()));
+                    std::memcpy(arr.mutable_data(), p.data(), p.size() * sizeof(float));
+                    policies_list.append(arr);
+                }
+                d["policies"] = policies_list;
+
+                // Players
+                py::list players_list;
+                for (int pl : rec.players) {
+                    players_list.append(pl);
+                }
+                d["players"] = players_list;
+
+                d["outcome"] = rec.outcome;
+                result.append(d);
+            }
+            return result;
         });
 }

@@ -420,6 +420,75 @@ def _backpropagate(node, white_value):
 
 BATCH_SIZE_MCTS = 8  # Number of leaves to collect before batched eval
 
+# Try to import C++ MCTS and batched self-play
+try:
+    from _ext_chess import MCTS as CppMCTS, move_to_index as cpp_move_to_index
+    HAS_CPP_MCTS = True
+except ImportError:
+    HAS_CPP_MCTS = False
+
+try:
+    from _ext_chess import SelfPlayManager as CppSelfPlayManager
+    HAS_CPP_SELFPLAY = True
+except ImportError:
+    HAS_CPP_SELFPLAY = False
+
+
+def mcts_search_cpp(game, evaluator: AlphaZeroEvaluator,
+                    num_simulations: int = 800, c_puct: float = 2.5,
+                    dirichlet_alpha: float = 0.3, noise_weight: float = 0.25,
+                    tactical_shortcuts: bool = True,
+                    batch_size: int = 8):
+    """
+    MCTS using C++ tree search with Python neural network evaluation.
+    Returns list of (move, visit_count) pairs.
+    """
+    legal = game.get_legal_moves()
+    if not legal:
+        return []
+
+    # Build index→move lookup for mapping results back
+    index_to_move = {}
+    for m in legal:
+        idx = move_to_index(m)
+        index_to_move[idx] = m
+
+    # Create C++ MCTS object
+    mcts = CppMCTS(game, num_simulations, c_puct,
+                   dirichlet_alpha, noise_weight,
+                   tactical_shortcuts, batch_size)
+
+    # First: expand root with a single NN call
+    policy_logits, _ = evaluator.evaluate_with_policy(game)
+    mcts.expand_root(policy_logits)
+
+    # Main search loop (skipped if tactical shortcut fired)
+    while not mcts.is_done():
+        # Phase 1: C++ selects leaves and encodes their boards
+        boards = mcts.select_leaves(batch_size)
+
+        if len(boards) == 0:
+            continue
+
+        # Phase 2: batch NN evaluation on GPU
+        with torch.no_grad():
+            t = torch.tensor(np.asarray(boards), dtype=torch.float32,
+                             device=evaluator.device)
+            policies, values = evaluator.model(t)
+            policies = policies.cpu().numpy()
+            values = values.cpu().numpy()
+
+        # Phase 3: C++ expands nodes and backpropagates
+        mcts.process_results(policies, values)
+
+    # Map results back to Move objects using policy indices
+    results = mcts.get_results()  # list of (policy_index, visit_count)
+    out = []
+    for idx, visits in results:
+        if idx in index_to_move:
+            out.append((index_to_move[idx], visits))
+    return out
+
 
 def mcts_search(game, evaluator: AlphaZeroEvaluator,
                 num_simulations: int = 800, c_puct: float = 2.5,
@@ -428,19 +497,19 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     """
     AlphaZero-style MCTS with batched neural network evaluation.
     Collects multiple leaves via virtual loss, evaluates in one GPU call.
-    Returns list of (move, visit_count) pairs.
+    Returns (move_visits, root_value) where move_visits is list of (move, visit_count)
+    and root_value is the value head's evaluation of the root position.
     """
     root = MCTSNode(game)
 
     # Expand root with policy priors (single eval)
     legal = game.get_legal_moves()
     if not legal:
-        return []
+        return [], 0.0
 
-    # Tactical shortcuts: 1-ply win check and 2-ply loss avoidance
+    # Tactical shortcut: force instant wins (but allow blunders)
     current = game.current_player
     if tactical_shortcuts:
-        losing_moves = set()
         for m in legal:
             gc = _copy_game(game)
             if not gc.make_move(m):
@@ -448,27 +517,9 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
 
             # 1-ply: this move immediately wins
             if gc.game_over and gc.winner == current:
-                return [(m, num_simulations)] + [(mm, 0) for mm in legal if mm != m]
+                return [(m, num_simulations)] + [(mm, 0) for mm in legal if mm != m], 1.0
 
-            # 1-ply: this move immediately loses (some suicide-like move)
-            if gc.game_over and gc.winner is not None and gc.winner != current:
-                losing_moves.add(str(m))
-                continue
-
-            # 2-ply: after this move, can opponent win on their next move?
-            if not gc.game_over:
-                opp_moves = gc.get_legal_moves()
-                for om in opp_moves:
-                    gc2 = _copy_game(gc)
-                    if gc2.make_move(om) and gc2.game_over and gc2.winner != current:
-                        losing_moves.add(str(m))
-                        break
-
-        # Filter out losing moves (unless all moves lose)
-        if losing_moves and len(losing_moves) < len(legal):
-            legal = [m for m in legal if str(m) not in losing_moves]
-
-    policy_logits, _ = evaluator.evaluate_with_policy(game)
+    policy_logits, root_value = evaluator.evaluate_with_policy(game)
 
     move_indices = [move_to_index(m) for m in legal]
     move_logits = np.array([policy_logits[i] for i in move_indices])
@@ -487,7 +538,7 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     root.is_expanded = True
 
     if not root.children:
-        return []
+        return [], root_value
 
     # Run simulations in batches
     sims_done = 0
@@ -533,7 +584,7 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
             _backpropagate(node, white_value)
             sims_done += 1
 
-    return [(ch.move, ch.visit_count) for ch in root.children]
+    return [(ch.move, ch.visit_count) for ch in root.children], root_value
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -568,9 +619,13 @@ def self_play_game(evaluator: AlphaZeroEvaluator,
         boards.append(encoder.encode_board(game))
         players.append(game.current_player)
 
-        # MCTS search
-        move_visits = mcts_search(game, evaluator, num_simulations,
-                                  c_puct, dirichlet_alpha, noise_weight)
+        # MCTS search (prefer C++ if available)
+        if HAS_CPP_MCTS:
+            move_visits = mcts_search_cpp(game, evaluator, num_simulations,
+                                          c_puct, dirichlet_alpha, noise_weight)
+        else:
+            move_visits, _ = mcts_search(game, evaluator, num_simulations,
+                                          c_puct, dirichlet_alpha, noise_weight)
         if not move_visits:
             break
 
@@ -673,6 +728,73 @@ def parallel_self_play(model_path: str, games_per_iteration: int,
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Batched self-play (C++ manages all games, Python only does GPU inference)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def batched_self_play(model, device, games_per_iteration: int,
+                      num_simulations: int = 800, c_puct: float = 2.5,
+                      dirichlet_alpha: float = 0.3, noise_weight: float = 0.25,
+                      temp_threshold: int = 30, max_moves: int = 200,
+                      num_parallel: int = 50, max_batch: int = 512,
+                      mcts_batch_size: int = 8):
+    """
+    Batched self-play using C++ SelfPlayManager.
+
+    All game logic and MCTS run in C++. Python only handles batched GPU
+    inference. This maximizes GPU utilization by collecting leaf positions
+    from many simultaneous games into one large batch.
+
+    Returns list of (boards, policies, players, outcome) tuples.
+    """
+    manager = CppSelfPlayManager(
+        num_parallel_games=num_parallel,
+        total_games=games_per_iteration,
+        num_simulations=num_simulations,
+        c_puct=c_puct,
+        dirichlet_alpha=dirichlet_alpha,
+        noise_weight=noise_weight,
+        tactical_shortcuts=True,
+        temp_threshold=temp_threshold,
+        max_moves=max_moves,
+        mcts_batch_size=mcts_batch_size,
+    )
+
+    total_evals = 0
+    while not manager.is_done():
+        # C++ collects positions from all active games
+        boards = manager.collect_leaves(max_batch)
+
+        if len(boards) == 0:
+            continue
+
+        # Batch GPU inference
+        with torch.no_grad():
+            t = torch.tensor(np.asarray(boards), dtype=torch.float32, device=device)
+            policies, values = model(t)
+            policies = policies.cpu().numpy()
+            values = values.cpu().numpy()
+
+        # Feed results back to C++
+        manager.process_results(policies, values)
+        total_evals += len(boards)
+
+    print(f"         batched self-play: {total_evals} NN evals, "
+          f"{manager.games_completed()} games", flush=True)
+
+    # Convert C++ results to the same format as self_play_game
+    raw_records = manager.get_results()
+    results = []
+    for rec in raw_records:
+        boards = [b.reshape(14, 8, 8) for b in rec["boards"]]
+        policies = list(rec["policies"])
+        players = list(rec["players"])
+        outcome = rec["outcome"]
+        results.append((boards, policies, players, outcome))
+
+    return results
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Testing utility
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -690,8 +812,14 @@ def test_vs_random(evaluator: AlphaZeroEvaluator, num_games: int = 100,
                 break
             is_model = (game.current_player == Color.WHITE) == model_is_white
             if is_model:
-                mv = mcts_search(game, evaluator, num_simulations=num_simulations,
-                                 dirichlet_alpha=0, noise_weight=0)
+                if HAS_CPP_MCTS:
+                    mv = mcts_search_cpp(game, evaluator, num_simulations=num_simulations,
+                                         dirichlet_alpha=0, noise_weight=0,
+                                         tactical_shortcuts=False)
+                else:
+                    mv, _ = mcts_search(game, evaluator, num_simulations=num_simulations,
+                                        dirichlet_alpha=0, noise_weight=0,
+                                        tactical_shortcuts=False)
                 if mv:
                     best = max(mv, key=lambda x: x[1])
                     move = best[0]
@@ -769,7 +897,25 @@ def train(
         all_values = []
         wins_w, wins_b, draws = 0, 0, 0
 
-        if num_workers > 1:
+        if HAS_CPP_SELFPLAY:
+            # Batched self-play: C++ manages all games, Python does GPU inference
+            game_results = batched_self_play(
+                model, device, games_per_iteration,
+                num_simulations=num_simulations,
+                temp_threshold=30,
+                num_parallel=min(50, games_per_iteration),
+                max_batch=512,
+            )
+            for boards, policies, players, outcome in game_results:
+                for b, pi, player in zip(boards, policies, players):
+                    value = outcome if player == 0 else -outcome
+                    all_boards.append(b)
+                    all_policies.append(pi)
+                    all_values.append(value)
+                if outcome > 0: wins_w += 1
+                elif outcome < 0: wins_b += 1
+                else: draws += 1
+        elif num_workers > 1:
             # Save current model for workers to load
             tmp_path = os.path.join(models_dir, "az_tmp_selfplay.pt")
             model.save_checkpoint(tmp_path, iteration=iter_num)

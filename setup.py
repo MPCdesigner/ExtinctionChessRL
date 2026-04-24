@@ -22,7 +22,7 @@ else:
 
 ext = Pybind11Extension(
     "_ext_chess",
-    sources=["cpp/engine.cpp", "cpp/bindings.cpp"],
+    sources=["cpp/engine.cpp", "cpp/mcts.cpp", "cpp/self_play.cpp", "cpp/bindings.cpp"],
     include_dirs=["cpp"],
     cxx_std=17,
     extra_compile_args=extra_args,
