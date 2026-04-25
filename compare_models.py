@@ -30,7 +30,7 @@ WINDOW_HEIGHT = 750
 SIDEBAR_X = BOARD_OFFSET_X + BOARD_SIZE + 20
 PANEL_WIDTH = WINDOW_WIDTH - SIDEBAR_X - 10
 
-SIM_OPTIONS = [10, 20, 50, 100, 200, 400]
+SIM_OPTIONS = [5, 10, 20, 50, 100, 200, 400]
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
 
 
@@ -62,7 +62,7 @@ class MenuScreen:
 
         self.m1_idx = len(models) - 1 if models else 0  # default to newest
         self.m2_idx = 0  # default to oldest
-        self.sim_idx = 4  # default to 200
+        self.sim_idx = 5  # default to 200
 
         # Which selector is active: "m1", "m2", "sims", "start"
         self.active = "m1"
