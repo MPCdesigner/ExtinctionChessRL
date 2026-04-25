@@ -109,6 +109,8 @@ def main():
     parser = argparse.ArgumentParser(description="Round-robin tournament")
     parser.add_argument("--models", nargs="+", default=None,
                         help="Model filenames (in models/ dir). Default: all .pt files")
+    parser.add_argument("--new-models", nargs="+", default=None,
+                        help="Only play matches involving at least one of these models")
     parser.add_argument("--sims", nargs="+", type=int, default=[20, 50, 100, 200, 400],
                         help="Sim settings to test (default: 20 50 100 200 400)")
     parser.add_argument("--device", default="cpu", help="Device for inference (default: cpu)")
@@ -139,7 +141,20 @@ def main():
         print("Need at least 2 valid models.")
         return
 
-    pairs = list(combinations(range(len(models)), 2))
+    all_pairs = list(combinations(range(len(models)), 2))
+
+    # Filter pairs if --new-models specified
+    if args.new_models:
+        new_paths = {os.path.join(MODELS_DIR, m) for m in args.new_models}
+        new_idxs = {i for i, m in enumerate(models) if m["path"] in new_paths}
+        if not new_idxs:
+            print("WARNING: none of --new-models matched loaded models")
+        pairs = [(a, b) for a, b in all_pairs if a in new_idxs or b in new_idxs]
+        print(f"\n  New models: {[models[i]['label'] for i in sorted(new_idxs)]}")
+        print(f"  Playing only matches involving new models")
+    else:
+        pairs = all_pairs
+
     total_games = len(pairs) * len(args.sims) * 2
     print(f"\n{len(models)} models, {len(pairs)} pairs, {len(args.sims)} sim settings")
     print(f"Total games: {total_games}\n")
