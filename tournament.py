@@ -10,12 +10,15 @@ Usage:
     python tournament.py --sims 50 100 200
 """
 import argparse
+import gc
 import glob
 import os
 import sys
 import time
 from copy import deepcopy
 from itertools import combinations
+
+import torch
 
 from extinction_chess import ExtinctionChess, Color
 from alphazero import AlphaZeroNet, AlphaZeroEvaluator, mcts_search
@@ -117,21 +120,20 @@ def main():
     else:
         model_paths = sorted(glob.glob(os.path.join(MODELS_DIR, "*.pt")))
 
-    if len(model_paths) < 2:
-        print("Need at least 2 models for a tournament.")
-        return
-
-    # Load all models
-    print("Loading models...")
+    # Validate paths and extract labels without loading
+    print("Discovering models...")
     models = []
     for path in model_paths:
         if not os.path.exists(path):
             print(f"  WARNING: {path} not found, skipping")
             continue
-        evaluator, iteration = load_model(path, args.device)
+        # Peek at metadata without keeping model in memory
+        data = torch.load(path, weights_only=False, map_location="cpu")
+        iteration = data.get("metadata", {}).get("iteration", "?")
         label = f"iter {iteration}"
-        models.append({"eval": evaluator, "label": label, "path": path})
-        print(f"  Loaded {label} ({os.path.basename(path)})")
+        models.append({"label": label, "path": path})
+        print(f"  Found {label} ({os.path.basename(path)})")
+        del data
 
     if len(models) < 2:
         print("Need at least 2 valid models.")
@@ -149,6 +151,22 @@ def main():
     overall_h2h = {}  # (i,j) -> total score of i vs j across all sims
     game_count = 0
 
+    # Cache for loaded evaluators (only keep 2 at a time)
+    eval_cache = {}
+
+    def get_evaluator(idx):
+        if idx not in eval_cache:
+            # Evict cache if needed (keep at most 2)
+            while len(eval_cache) >= 2:
+                old_key = next(iter(eval_cache))
+                del eval_cache[old_key]
+                gc.collect()
+                if args.device != "cpu":
+                    torch.cuda.empty_cache()
+            evaluator, _ = load_model(models[idx]["path"], args.device)
+            eval_cache[idx] = evaluator
+        return eval_cache[idx]
+
     for sims in args.sims:
         print(f"\n{'='*60}")
         print(f"  SIM SETTING: {sims}")
@@ -164,9 +182,12 @@ def main():
             print(f"\n  [{game_count}/{total_games}] {a_label} vs {b_label} ({sims} sims)...",
                   flush=True)
 
+            eval_a = get_evaluator(a_idx)
+            eval_b = get_evaluator(b_idx)
+
             t0 = time.time()
             a_score, b_score, details = play_match(
-                models[a_idx]["eval"], models[b_idx]["eval"], sims,
+                eval_a, eval_b, sims,
                 label_a=a_label, label_b=b_label
             )
             elapsed = time.time() - t0
