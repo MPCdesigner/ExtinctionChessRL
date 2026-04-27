@@ -3,3 +3,5 @@ __pycache__/
 *.tar
 *.pt
 .venv/
+src/models/
+src/training_log*.json

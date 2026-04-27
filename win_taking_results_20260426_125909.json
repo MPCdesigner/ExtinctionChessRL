@@ -1,0 +1,600 @@
+{
+  "timestamp": "20260426_125909",
+  "models": [
+    "az_iter200.pt"
+  ],
+  "sim_counts": [
+    50,
+    100
+  ],
+  "num_positions_target": 20,
+  "num_positions_tested": 10,
+  "aggregate": {
+    "iter 200": {
+      "50": {
+        "hits": 11,
+        "misses": 0
+      },
+      "100": {
+        "hits": 10,
+        "misses": 0
+      }
+    }
+  },
+  "positions": [
+    {
+      "position_index": 0,
+      "board": [
+        "R.BQKB.R",
+        "....N...",
+        "N.PPP.P.",
+        "PP.....P",
+        "...np.q.",
+        "p.pn...P",
+        ".p.p.pb.",
+        "r.b.k..r"
+      ],
+      "side_to_move": "white",
+      "winning_moves": [
+        "h4-g5"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "h4-g5",
+          "visits": 46,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              46
+            ],
+            [
+              "a1-a2",
+              3
+            ],
+            [
+              "f1-h3",
+              1
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "h4-g5",
+          "visits": 96,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              96
+            ],
+            [
+              "a1-a2",
+              3
+            ],
+            [
+              "f1-h3",
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 1,
+      "board": [
+        "R.BQ.B.R",
+        "....NK..",
+        "N.PPP.P.",
+        "PP.....P",
+        "...np.q.",
+        "p.pn...P",
+        ".p.p.pb.",
+        "r.b.kr.."
+      ],
+      "side_to_move": "white",
+      "winning_moves": [
+        "h4-g5"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "h4-g5",
+          "visits": 46,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              46
+            ],
+            [
+              "a1-a2",
+              3
+            ],
+            [
+              "f2-e1",
+              1
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "h4-g5",
+          "visits": 96,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              96
+            ],
+            [
+              "a1-a2",
+              3
+            ],
+            [
+              "f2-e1",
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 2,
+      "board": [
+        "R.BQ.B..",
+        "....NK..",
+        "N.PPP.PR",
+        "PP.....P",
+        "...np.q.",
+        "p.pn.p.P",
+        ".p.p..b.",
+        "r.b.kr.."
+      ],
+      "side_to_move": "white",
+      "winning_moves": [
+        "h4-g5"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "h4-g5",
+          "visits": 46,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              46
+            ],
+            [
+              "a1-a2",
+              3
+            ],
+            [
+              "f2-e1",
+              1
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "h4-g5",
+          "visits": 96,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              96
+            ],
+            [
+              "a1-a2",
+              3
+            ],
+            [
+              "f2-e1",
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 3,
+      "board": [
+        "R.BQ.B..",
+        "....NK..",
+        "N.P.P.PR",
+        "PP.P...P",
+        ".p.np.q.",
+        "p.pn.p.P",
+        "...p..b.",
+        "r.b.kr.."
+      ],
+      "side_to_move": "white",
+      "winning_moves": [
+        "h4-g5"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "h4-g5",
+          "visits": 48,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              48
+            ],
+            [
+              "a1-a2",
+              1
+            ],
+            [
+              "f2-e1",
+              1
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "h4-g5",
+          "visits": 98,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              98
+            ],
+            [
+              "a1-a2",
+              1
+            ],
+            [
+              "f2-e1",
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 4,
+      "board": [
+        "R.BQ.B..",
+        "....N.K.",
+        "N.P.P.PR",
+        "PP.P...P",
+        ".p.np.q.",
+        "p.pn.p.P",
+        "...p.rb.",
+        "r.b.k..."
+      ],
+      "side_to_move": "white",
+      "winning_moves": [
+        "h4-g5"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "h4-g5",
+          "visits": 48,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              48
+            ],
+            [
+              "a1-a2",
+              1
+            ],
+            [
+              "h3-h1",
+              1
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "h4-g5",
+          "visits": 98,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              98
+            ],
+            [
+              "a1-a2",
+              1
+            ],
+            [
+              "h3-h1",
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 5,
+      "board": [
+        "R.BQ.B..",
+        "....N.K.",
+        "N.P.P.PR",
+        "PP.....P",
+        ".p.nP.q.",
+        "p.pn.p.P",
+        "r..p.rb.",
+        "..b.k..."
+      ],
+      "side_to_move": "white",
+      "winning_moves": [
+        "h4-g5"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "h4-g5",
+          "visits": 48,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              48
+            ],
+            [
+              "a1-a2",
+              1
+            ],
+            [
+              "h3-h1",
+              1
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "h4-g5",
+          "visits": 98,
+          "hit": true,
+          "top3": [
+            [
+              "h4-g5",
+              98
+            ],
+            [
+              "a1-a2",
+              1
+            ],
+            [
+              "h3-h1",
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 6,
+      "board": [
+        "R..Q.B..",
+        "...BN.K.",
+        "N.P.n.PR",
+        "PP..P...",
+        ".p..P..P",
+        "p.pn.p.q",
+        "r..p.rb.",
+        "..b.k..."
+      ],
+      "side_to_move": "black",
+      "winning_moves": [
+        "e3-d1",
+        "e3-g2"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "e3-d1",
+          "visits": 49,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              49
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "e3-d1",
+          "visits": 99,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              99
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 7,
+      "board": [
+        "R..Q.B..",
+        "...BN.K.",
+        "..P.n.PR",
+        "PPN.P...",
+        ".pp.P..P",
+        "p..n.p.q",
+        "r..p.rb.",
+        "..b.k..."
+      ],
+      "side_to_move": "black",
+      "winning_moves": [
+        "e3-d1",
+        "e3-g2"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "e3-d1",
+          "visits": 49,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              49
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "e3-d1",
+          "visits": 99,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              99
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 8,
+      "board": [
+        "R..QBB..",
+        "....N.K.",
+        "..P.n.PR",
+        "PPN.P...",
+        ".pp.P..P",
+        "p..n.p.q",
+        "rb.p.rb.",
+        "....k..."
+      ],
+      "side_to_move": "black",
+      "winning_moves": [
+        "e3-d1",
+        "e3-g2"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "e3-d1",
+          "visits": 49,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              49
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "e3-d1",
+          "visits": 99,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              99
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "position_index": 9,
+      "board": [
+        "R..QBB..",
+        ".N..N.K.",
+        "..P.n.PR",
+        "PP..P...",
+        ".pp.P..P",
+        "p..n.p.q",
+        "rb.pr.b.",
+        "....k..."
+      ],
+      "side_to_move": "black",
+      "winning_moves": [
+        "e3-d1",
+        "e3-g2"
+      ],
+      "tests": {
+        "iter 200@50": {
+          "move": "e3-d1",
+          "visits": 49,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              49
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        },
+        "iter 200@100": {
+          "move": "e3-d1",
+          "visits": 99,
+          "hit": true,
+          "top3": [
+            [
+              "e3-d1",
+              99
+            ],
+            [
+              "e3-f5",
+              1
+            ],
+            [
+              "e3-d5",
+              0
+            ]
+          ]
+        }
+      }
+    }
+  ]
+}
