@@ -1,0 +1,75 @@
+Extinction Chess RL — Common Commands
+======================================
+
+== SSH into cluster ==
+ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca
+
+== ON THE CLUSTER ==
+
+Check jobs:
+  squeue -u h74liang
+
+Check GPUs:
+  sinfo -N -p compute -o "%N %G %t %C %m"
+
+Check training log (replace JOBID):
+  tail -20 ~/train_JOBID.log
+
+Current job: 461413
+  tail -20 ~/train_461413.log
+
+Submit job:
+  sbatch ~/extinction-chess/train.sh
+
+Cancel job (replace JOBID):
+  scancel JOBID
+
+List models on cluster:
+  ls ~/extinction-chess/models/
+
+List log files:
+  ls ~/train_*.log
+
+== FROM LOCAL POWERSHELL (not from cluster!) ==
+
+Download a model (replace N and WINPCTpct):
+  scp -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/models/az_iter_N_WINPCTpct.pt "c:/Users/henry/Desktop/Extinction Chess RL/models/az_iterN.pt"
+
+Example (iter 240):
+  scp -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/models/az_iter_240_100pct.pt "c:/Users/henry/Desktop/Extinction Chess RL/models/az_iter240.pt"
+
+Upload a file to cluster:
+  scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/src/FILENAME" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+
+== RUN TOURNAMENT (local, from src/) ==
+
+Run new models only:
+  cd src
+  python tournament.py --new-models az_iter170.pt az_iter180.pt az_iter190.pt > ../tournament_output.txt
+
+Merge results into tournament_results.txt:
+  cd "Extinction Chess RL"
+  python merge_tournament.py tournament_output.txt
+
+== COMPARE MODELS (local, from src/) ==
+
+Interactive menu (select models and sims in GUI):
+  cd src
+  python compare_models.py
+
+Direct mode (skip menu):
+  cd src
+  python compare_models.py --model1 ../models/az_iter240.pt --model2 ../models/az_iter100.pt --sims 400
+
+== WIN-TAKING TEST (local, from project root) ==
+
+Interactive menu (select models, sims, positions in GUI):
+  python win_taking_test2.py
+
+== GPU NOTES ==
+
+delta-slurm1  (RTX 2080 Ti) — working, currently in use
+trpro-slurm1  (RTX 3090)    — drain, check periodically
+trpro-slurm2  (RTX 4090)    — CUDA error, unusable
+tr-slurm2     (GTX 1080)    — drain + CUDA errors
+wato2-slurm1  (RTX 2080 Ti) — down
