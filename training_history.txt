@@ -7,7 +7,8 @@ Phase 3: Cluster (2080 Ti), 400 games, 400 sims — iters 56-73
 Phase 4: Cluster (2080 Ti), 400 games, 400 sims, C++ MCTS — iters 74-100
 Phase 5: Cluster (2080 Ti), 400 games, 400 sims, C++ batched self-play — iters 101-204
 Phase 6: Cluster (RTX 3090), 400 games, 400 sims, C++ batched self-play — iters 205-234
-Phase 7: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001 (10x reduction from 0.001) — iters 235+
+Phase 7: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001 (10x reduction from 0.001) — iters 235-280
+Phase 8: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001, 10 epochs (up from 5) — iters 281+
 
 Note: In the training log, the "batched self-play: NNNN NN evals" line prints
 BEFORE the [iter N] line it belongs to. The NNEvals column maps each count to
@@ -272,3 +273,4 @@ Iter  W    B    D   Positions  GenTime  TrainT    NNEvals     Loss    Policy  Va
  278  211  189   0    12077    8513.8s   27.2s    9173181   3.0403  2.7065  0.3338
  279  188  211   1    12694    9156.4s   28.6s    9662926   3.0089  2.6867  0.3222
  280  200  199   1    12457    8734.8s   28.0s    9465153   2.9522  2.6445  0.3077  98% vs random (1 loss)
+ 281  190  209   1    12721    7387.1s   57.9s    9672521   2.6399  2.4095  0.2304  Phase 8: 10 epochs (up from 5)
