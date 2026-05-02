@@ -10,7 +10,7 @@ namespace ext {
 // ── Training data from one completed game ─────────────────────────────────
 
 struct GameRecord {
-    std::vector<std::vector<float>> boards;    // each is 14*64 = 896 floats
+    std::vector<std::vector<float>> boards;    // each is BOARD_ENCODING_SIZE floats
     std::vector<std::vector<float>> policies;  // each is 4864 floats
     std::vector<int>                players;   // 0=WHITE, 1=BLACK
     float                           outcome;   // 1.0, -1.0, 0.0
@@ -81,7 +81,7 @@ public:
 
     // Collect positions needing NN evaluation from all active games.
     // Returns the number of positions. Boards are written to out_boards
-    // (must have space for at least max_batch * 14 * 64 floats).
+    // (must have space for at least max_batch * BOARD_ENCODING_SIZE floats).
     int collect_leaves(float* out_boards, int max_batch);
 
     // Process NN results for the collected leaves.

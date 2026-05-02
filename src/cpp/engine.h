@@ -107,6 +107,14 @@ public:
     u64     hash;
     std::vector<u64> history;
 
+    // History ring buffer for NN input (last 8 positions' piece bitboards)
+    static constexpr int HIST_N = 8;
+    u64  bb_hist[HIST_N][2][6]{};   // piece bitboards for past positions
+    int  hist_len = 0;              // number of valid entries (0..HIST_N)
+    int  hist_idx = 0;              // next write position in ring buffer
+
+    void push_history();            // save current bb into ring buffer
+
     static constexpr uint8_t WK = 1, WQ = 2, BK = 4, BQ = 8;
 
     Board();
@@ -150,7 +158,19 @@ public:
     std::vector<PieceType> extinct(Color c) const;
 
     // Neural-network encoding
-    void encode_board(float* out) const;          // 14×8×8 = 896 floats
+    // 115 channels × 8 × 8:
+    //   0-11:    current position (12 piece planes)
+    //   12-23:   T-1 position
+    //   ...
+    //   96-107:  T-8 position
+    //   108:     current player
+    //   109:     endangered pieces
+    //   110-113: castling rights (WK, WQ, BK, BQ)
+    //   114:     halfmove clock (normalized)
+    static constexpr int NUM_INPUT_CHANNELS = 115;
+    static constexpr int BOARD_ENCODING_SIZE = NUM_INPUT_CHANNELS * 64;
+
+    void encode_board(float* out) const;          // 115×8×8 = 7360 floats
     void get_simple_features(float* out) const;   // 39 floats
 
 private:

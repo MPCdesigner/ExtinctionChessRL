@@ -47,8 +47,7 @@ public:
 
     // Phase 1: Select up to batch_size leaves, encode their boards.
     // Returns the number of leaves needing NN evaluation.
-    // out_boards must have space for batch_size * 14 * 64 floats.
-    // Also fills terminal_count with terminals handled this batch.
+    // out_boards must have space for batch_size * BOARD_ENCODING_SIZE floats.
     int select_leaves(float* out_boards);
 
     // Phase 2: Receive NN results and expand + backprop.

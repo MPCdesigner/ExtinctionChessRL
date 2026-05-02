@@ -8,6 +8,9 @@
 namespace py = pybind11;
 using namespace ext;
 
+static constexpr int NC = Game::NUM_INPUT_CHANNELS;  // 115
+static constexpr int ENC_SIZE = Game::BOARD_ENCODING_SIZE;  // 115*64
+
 // ── Helper: Python Position object ─────────────────────────────────────────
 
 struct PyPosition {
@@ -303,7 +306,7 @@ PYBIND11_MODULE(_ext_chess, m) {
         // ── Neural network encoding ────────────────────────────────────────
 
         .def("encode_board", [](const Game& g) {
-            py::array_t<float> arr({14, 8, 8});
+            py::array_t<float> arr({NC, 8, 8});
             auto buf = arr.mutable_data();
             g.encode_board(buf);
             return arr;
@@ -343,17 +346,17 @@ PYBIND11_MODULE(_ext_chess, m) {
 
         .def("select_leaves", [](MCTS& mcts, int max_leaves) {
             // Allocate output buffer
-            py::array_t<float> boards({max_leaves, 14, 8, 8});
+            py::array_t<float> boards({max_leaves, NC, 8, 8});
             auto buf = boards.mutable_data();
             int num_leaves = mcts.select_leaves(buf);
             // Return only the filled portion
             if (num_leaves == 0) {
-                return py::array_t<float>({0, 14, 8, 8});
+                return py::array_t<float>({0, NC, 8, 8});
             }
             // Slice to actual number of leaves
-            py::array_t<float> result({num_leaves, 14, 8, 8});
+            py::array_t<float> result({num_leaves, NC, 8, 8});
             std::memcpy(result.mutable_data(), buf,
-                        num_leaves * 14 * 64 * sizeof(float));
+                        num_leaves * ENC_SIZE * sizeof(float));
             return result;
         }, py::arg("max_leaves") = 8)
 
@@ -403,16 +406,16 @@ PYBIND11_MODULE(_ext_chess, m) {
 
         .def("collect_leaves", [](SelfPlayManager& mgr, int max_batch) {
             // Allocate output buffer
-            py::array_t<float> boards({max_batch, 14, 8, 8});
+            py::array_t<float> boards({max_batch, NC, 8, 8});
             auto buf = boards.mutable_data();
             int num_leaves = mgr.collect_leaves(buf, max_batch);
             if (num_leaves == 0) {
-                return py::array_t<float>({0, 14, 8, 8});
+                return py::array_t<float>({0, NC, 8, 8});
             }
             // Return only the filled portion
-            py::array_t<float> result({num_leaves, 14, 8, 8});
+            py::array_t<float> result({num_leaves, NC, 8, 8});
             std::memcpy(result.mutable_data(), buf,
-                        num_leaves * 14 * 64 * sizeof(float));
+                        num_leaves * ENC_SIZE * sizeof(float));
             return result;
         }, py::arg("max_batch") = 256)
 
@@ -432,7 +435,7 @@ PYBIND11_MODULE(_ext_chess, m) {
             py::list result;
             for (auto& rec : records) {
                 py::dict d;
-                // Convert boards: list of (14*64,) float vectors
+                // Convert boards: list of (BOARD_ENCODING_SIZE,) float vectors
                 py::list boards_list;
                 for (auto& b : rec.boards) {
                     py::array_t<float> arr(static_cast<py::ssize_t>(b.size()));

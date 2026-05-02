@@ -13,14 +13,15 @@ from extinction_chess import (
 
 class StateEncoder:
     """Encodes chess board state into tensor format for neural network"""
-    
+
     def __init__(self):
-        # We'll use a simple encoding:
-        # 12 channels for pieces (6 piece types × 2 colors)
-        # 1 channel for current player
-        # 1 channel for endangered pieces
-        # Total: 14 channels × 8 × 8
-        self.num_channels = 14
+        # 115 channels × 8 × 8:
+        #   0-107: 9 positions × 12 piece planes (current + 8 history)
+        #   108:   current player
+        #   109:   endangered pieces
+        #   110-113: castling rights (WK, WQ, BK, BQ)
+        #   114:   halfmove clock (normalized)
+        self.num_channels = 115
         self.board_size = 8
         
         # Piece type to channel index mapping
@@ -42,16 +43,17 @@ class StateEncoder:
     def encode_board(self, game: ExtinctionChess) -> np.ndarray:
         """
         Encode the current board state as a tensor
-        Returns: numpy array of shape (14, 8, 8)
+        Returns: numpy array of shape (115, 8, 8)
         """
-        # Use C++ fast path if available
+        # Use C++ fast path if available (handles history planes internally)
         if hasattr(game, 'encode_board'):
             return np.asarray(game.encode_board(), dtype=np.float32)
 
+        # Pure-Python fallback (no history planes — they'll be zeros)
         tensor = np.zeros((self.num_channels, self.board_size, self.board_size),
                          dtype=np.float32)
 
-        # Encode pieces
+        # Channels 0-11: current position piece planes
         for rank in range(8):
             for file in range(8):
                 pos = Position(rank, file)
@@ -60,11 +62,13 @@ class StateEncoder:
                     channel = self.piece_channels[(piece.piece_type, piece.color)]
                     tensor[channel, rank, file] = 1.0
 
-        # Channel 12: Current player (1 for white's turn, 0 for black's turn)
-        if game.current_player == Color.WHITE:
-            tensor[12, :, :] = 1.0
+        # Channels 12-107: history planes (zeros in fallback — no history available)
 
-        # Channel 13: Endangered pieces (pieces with only 1 left)
+        # Channel 108: Current player (1 for white's turn, 0 for black's turn)
+        if game.current_player == Color.WHITE:
+            tensor[108, :, :] = 1.0
+
+        # Channel 109: Endangered pieces (pieces with only 1 left)
         white_endangered = game.get_endangered_pieces(Color.WHITE)
         black_endangered = game.get_endangered_pieces(Color.BLACK)
 
@@ -75,7 +79,20 @@ class StateEncoder:
                 if piece:
                     if ((piece.color == Color.WHITE and piece.piece_type in white_endangered) or
                         (piece.color == Color.BLACK and piece.piece_type in black_endangered)):
-                        tensor[13, rank, file] = 1.0
+                        tensor[109, rank, file] = 1.0
+
+        # Channels 110-113: castling rights
+        # Access via board properties if available
+        if hasattr(game.board, 'castling'):
+            castling = game.board.castling
+            if castling & 1: tensor[110, :, :] = 1.0  # WK
+            if castling & 2: tensor[111, :, :] = 1.0  # WQ
+            if castling & 4: tensor[112, :, :] = 1.0  # BK
+            if castling & 8: tensor[113, :, :] = 1.0  # BQ
+
+        # Channel 114: halfmove clock (normalized)
+        if hasattr(game.board, 'halfmove_clock'):
+            tensor[114, :, :] = game.board.halfmove_clock / 100.0
 
         return tensor
     

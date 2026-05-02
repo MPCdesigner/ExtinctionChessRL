@@ -121,6 +121,16 @@ void Board::clear() {
     fmnum = 1;
     hash = 0;
     history.clear();
+    std::memset(bb_hist, 0, sizeof(bb_hist));
+    hist_len = 0;
+    hist_idx = 0;
+}
+
+void Board::push_history() {
+    // Save current piece bitboards into the ring buffer
+    std::memcpy(bb_hist[hist_idx], bb, sizeof(bb));
+    hist_idx = (hist_idx + 1) % HIST_N;
+    if (hist_len < HIST_N) hist_len++;
 }
 
 void Board::setup() {
@@ -393,6 +403,9 @@ bool Game::make_move(const Move& m) {
 
     PieceType moving = board.type_at(m.from);
 
+    // Save current board into history ring buffer (for NN history planes)
+    board.push_history();
+
     // Record position hash for threefold repetition (before move, matching Python)
     board.history.push_back(board.compute_hash(side));
 
@@ -553,9 +566,9 @@ std::vector<PieceType> Game::extinct(Color c) const {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void Game::encode_board(float* out) const {
-    std::memset(out, 0, 14 * 64 * sizeof(float));
+    std::memset(out, 0, BOARD_ENCODING_SIZE * sizeof(float));
 
-    // Channels 0–11: piece planes  (channel = pt + color*6)
+    // ── Channels 0–11: current position piece planes (T=0) ──
     for (int c = 0; c < 2; c++)
         for (int pt = 0; pt < 6; pt++) {
             int ch = pt + c * 6;
@@ -566,12 +579,29 @@ void Game::encode_board(float* out) const {
             }
         }
 
-    // Channel 12: current player (all 1s if white's turn)
+    // ── Channels 12–107: history planes T-1 through T-8 (12 channels each) ──
+    for (int h = 0; h < Board::HIST_N; h++) {
+        if (h >= board.hist_len) break;  // no more valid history
+        // T-(h+1): most recent history entry is at (hist_idx - 1 - h + HIST_N) % HIST_N
+        int ring_pos = (board.hist_idx - 1 - h + Board::HIST_N) % Board::HIST_N;
+        int base_ch = 12 + h * 12;  // channels 12, 24, 36, ...
+        for (int c = 0; c < 2; c++)
+            for (int pt = 0; pt < 6; pt++) {
+                int ch = base_ch + pt + c * 6;
+                u64 b = board.bb_hist[ring_pos][c][pt];
+                while (b) {
+                    int s = pop_lsb(b);
+                    out[ch * 64 + s] = 1.0f;
+                }
+            }
+    }
+
+    // ── Channel 108: current player (all 1s if white's turn) ──
     if (side == WHITE)
         for (int i = 0; i < 64; i++)
-            out[12 * 64 + i] = 1.0f;
+            out[108 * 64 + i] = 1.0f;
 
-    // Channel 13: endangered pieces (count == 1)
+    // ── Channel 109: endangered pieces (count == 1) ──
     u64 endangered_mask = 0;
     for (int c = 0; c < 2; c++)
         for (int pt = 0; pt < 6; pt++)
@@ -581,9 +611,24 @@ void Game::encode_board(float* out) const {
         u64 e = endangered_mask;
         while (e) {
             int s = pop_lsb(e);
-            out[13 * 64 + s] = 1.0f;
+            out[109 * 64 + s] = 1.0f;
         }
     }
+
+    // ── Channels 110–113: castling rights (each a full plane of 0 or 1) ──
+    if (board.castling & Board::WK)
+        for (int i = 0; i < 64; i++) out[110 * 64 + i] = 1.0f;
+    if (board.castling & Board::WQ)
+        for (int i = 0; i < 64; i++) out[111 * 64 + i] = 1.0f;
+    if (board.castling & Board::BK)
+        for (int i = 0; i < 64; i++) out[112 * 64 + i] = 1.0f;
+    if (board.castling & Board::BQ)
+        for (int i = 0; i < 64; i++) out[113 * 64 + i] = 1.0f;
+
+    // ── Channel 114: halfmove clock (normalized to [0,1]) ──
+    float hm_val = static_cast<float>(board.hmclock) / 100.0f;
+    for (int i = 0; i < 64; i++)
+        out[114 * 64 + i] = hm_val;
 }
 
 void Game::get_simple_features(float* out) const {

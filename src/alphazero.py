@@ -40,6 +40,7 @@ from state_encoder import StateEncoder
 
 NUM_POLICY_PLANES = 76
 POLICY_SIZE = NUM_POLICY_PLANES * 64   # 4864
+NUM_INPUT_CHANNELS = 115  # 9 positions × 12 pieces + player + endangered + 4 castling + halfmove
 
 # Direction table for queen-type moves
 #   index → (dr, df)
@@ -181,13 +182,13 @@ class AlphaZeroNet(nn.Module):
     AlphaZero-scale network for Extinction Chess.
 
     Architecture (matches the original paper):
-      Input:  14 × 8 × 8
+      Input:  115 × 8 × 8 (9 positions × 12 pieces + player + endangered + 4 castling + hmclock)
       Body:   Conv 3×3 → 20 residual blocks (256 filters)
       Policy: Conv 1×1 (2 filters) → BN → ReLU → FC → 4864 logits
       Value:  Conv 1×1 (1 filter)  → BN → ReLU → FC → 256 → ReLU → FC → 1 → tanh
     """
 
-    def __init__(self, in_channels: int = 14, num_filters: int = 256,
+    def __init__(self, in_channels: int = NUM_INPUT_CHANNELS, num_filters: int = 256,
                  num_blocks: int = 20, policy_size: int = POLICY_SIZE):
         super().__init__()
         self.in_channels = in_channels
@@ -246,13 +247,25 @@ class AlphaZeroNet(nn.Module):
     def load_checkpoint(cls, path) -> Tuple["AlphaZeroNet", dict]:
         data = torch.load(path, weights_only=False, map_location="cpu")
         meta = data.get("metadata", {})
+        old_in_channels = meta.get("in_channels", 14)
         net = cls(
-            in_channels=meta.get("in_channels", 14),
+            in_channels=NUM_INPUT_CHANNELS,
             num_filters=meta.get("num_filters", 256),
             num_blocks=meta.get("num_blocks", 20),
             policy_size=meta.get("policy_size", POLICY_SIZE),
         )
-        net.load_state_dict(data["state_dict"])
+        state = data["state_dict"]
+
+        # Zero-init weight expansion for old checkpoints with fewer input channels
+        if old_in_channels < NUM_INPUT_CHANNELS:
+            old_conv_w = state["input_conv.weight"]  # [filters, old_ch, 3, 3]
+            new_conv_w = torch.zeros_like(net.input_conv.weight)  # [filters, new_ch, 3, 3]
+            new_conv_w[:, :old_in_channels, :, :] = old_conv_w
+            state["input_conv.weight"] = new_conv_w
+            print(f"  Checkpoint migration: {old_in_channels} → {NUM_INPUT_CHANNELS} "
+                  f"input channels (zero-init expansion)")
+
+        net.load_state_dict(state)
         return net, meta
 
 
@@ -602,7 +615,7 @@ def self_play_game(evaluator: AlphaZeroEvaluator,
     Play one self-play game using MCTS.
 
     Returns:
-        boards:   list of encoded board tensors (14×8×8 numpy arrays)
+        boards:   list of encoded board tensors (115×8×8 numpy arrays)
         policies: list of policy target vectors (length 4864)
         outcome:  1.0 (white wins), -1.0 (black wins), 0.0 (draw)
     """
@@ -785,7 +798,7 @@ def batched_self_play(model, device, games_per_iteration: int,
     raw_records = manager.get_results()
     results = []
     for rec in raw_records:
-        boards = [b.reshape(14, 8, 8) for b in rec["boards"]]
+        boards = [b.reshape(NUM_INPUT_CHANNELS, 8, 8) for b in rec["boards"]]
         policies = list(rec["policies"])
         players = list(rec["players"])
         outcome = rec["outcome"]
@@ -943,7 +956,7 @@ def train(
         start_iter = meta.get("iteration", 0)
         print(f"Resumed from iteration {start_iter}")
     else:
-        model = AlphaZeroNet(in_channels=14, num_filters=num_filters,
+        model = AlphaZeroNet(in_channels=NUM_INPUT_CHANNELS, num_filters=num_filters,
                              num_blocks=num_blocks)
         start_iter = 0
         total_params = sum(p.numel() for p in model.parameters())

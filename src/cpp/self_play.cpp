@@ -96,7 +96,7 @@ void SelfPlayManager::record_position(int slot) {
     auto& pg = games_[slot];
 
     // Encode current board
-    std::vector<float> board_enc(14 * 64);
+    std::vector<float> board_enc(Game::BOARD_ENCODING_SIZE);
     pg.game.encode_board(board_enc.data());
     pg.boards.push_back(std::move(board_enc));
 
@@ -200,7 +200,7 @@ int SelfPlayManager::collect_leaves(float* out_boards, int max_batch) {
 
         if (pg.phase == GamePhase::NEED_ROOT_EVAL) {
             // Encode the root position for NN evaluation
-            float* dst = out_boards + collected * 14 * 64;
+            float* dst = out_boards + collected * Game::BOARD_ENCODING_SIZE;
             pg.game.encode_board(dst);
 
             LeafMapping lm;
@@ -227,7 +227,7 @@ int SelfPlayManager::collect_leaves(float* out_boards, int max_batch) {
             if (remaining < mcts_batch_size_) break;  // not enough room for a full MCTS batch
 
             // Collect leaves into the output buffer at the current offset
-            float* dst = out_boards + collected * 14 * 64;
+            float* dst = out_boards + collected * Game::BOARD_ENCODING_SIZE;
             int num_leaves = pg.mcts->select_leaves(dst);
 
             for (int li = 0; li < num_leaves; li++) {

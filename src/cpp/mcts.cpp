@@ -318,7 +318,7 @@ int MCTS::select_leaves(float* out_boards) {
             // Leaf needing NN evaluation
             pending_leaves_.push_back(node_idx);
             // Encode board into output buffer
-            float* dst = out_boards + leaves_collected * 14 * 64;
+            float* dst = out_boards + leaves_collected * Game::BOARD_ENCODING_SIZE;
             node.game.encode_board(dst);
             leaves_collected++;
         }
