@@ -15,8 +15,8 @@ Check GPUs:
 Check training log (replace JOBID):
   tail -20 ~/train_JOBID.log
 
-Current job: 461413
-  tail -20 ~/train_461413.log
+Current job: 461649
+  tail -20 ~/train_461649.log
 
 Submit job:
   sbatch ~/extinction-chess/train.sh

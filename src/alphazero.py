@@ -925,7 +925,10 @@ def train(
     eval_simulations: int = 100,
     num_workers: int = 1,
     instant_win_positions: int = 0,
+    max_wall_time: float = 0,
+    num_epochs: int = 5,
 ):
+    job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"AlphaZero config: {num_blocks} blocks, {num_filters} filters, "
@@ -957,12 +960,30 @@ def train(
     for iteration in range(start_iter, start_iter + iterations):
         t0 = time.time()
         iter_num = iteration + 1
+
+        # ── Wall-time check: exit cleanly before starting expensive self-play ──
+        if max_wall_time > 0 and iter_num > start_iter + 1:
+            elapsed = t0 - job_start_time
+            remaining = max_wall_time - elapsed
+            iters_done = iter_num - start_iter - 1
+            avg_gen_time = (t0 - job_start_time) / iters_done
+            needed = avg_gen_time + 1000
+            if remaining < needed:
+                print(f"         Wall time check: {remaining:.0f}s remaining, "
+                      f"need ~{needed:.0f}s (avg {avg_gen_time:.0f}s + 1000s buffer), "
+                      f"stopping before iter {iter_num}")
+                break
+
         model.eval()
 
         # ── Self-play ───────────────────────────────────────────────────────
         all_boards = []
         all_policies = []
         all_values = []
+        # Pre-terminal positions: last position of each decisive game
+        terminal_boards = []
+        terminal_policies = []
+        terminal_values = []
         wins_w, wins_b, draws = 0, 0, 0
 
         if HAS_CPP_SELFPLAY:
@@ -980,6 +1001,11 @@ def train(
                     all_boards.append(b)
                     all_policies.append(pi)
                     all_values.append(value)
+                if outcome != 0 and len(boards) > 0:
+                    terminal_boards.append(boards[-1])
+                    terminal_policies.append(policies[-1])
+                    tv = outcome if players[-1] == 0 else -outcome
+                    terminal_values.append(tv)
                 if outcome > 0: wins_w += 1
                 elif outcome < 0: wins_b += 1
                 else: draws += 1
@@ -999,6 +1025,11 @@ def train(
                     all_boards.append(b)
                     all_policies.append(pi)
                     all_values.append(value)
+                if outcome != 0 and len(boards) > 0:
+                    terminal_boards.append(boards[-1])
+                    terminal_policies.append(policies[-1])
+                    tv = outcome if players[-1] == Color.WHITE else -outcome
+                    terminal_values.append(tv)
                 if outcome > 0: wins_w += 1
                 elif outcome < 0: wins_b += 1
                 else: draws += 1
@@ -1014,14 +1045,22 @@ def train(
                     all_boards.append(b)
                     all_policies.append(pi)
                     all_values.append(value)
+                if outcome != 0 and len(boards) > 0:
+                    terminal_boards.append(boards[-1])
+                    terminal_policies.append(policies[-1])
+                    tv = outcome if players[-1] == Color.WHITE else -outcome
+                    terminal_values.append(tv)
 
                 if outcome > 0: wins_w += 1
                 elif outcome < 0: wins_b += 1
                 else: draws += 1
 
         gen_time = time.time() - t0
+        elapsed = time.time() - job_start_time
+        eh, em, es = int(elapsed // 3600), int(elapsed % 3600 // 60), int(elapsed % 60)
         print(f"[iter {iter_num}] W={wins_w} B={wins_b} D={draws} "
-              f"| {len(all_boards)} positions | gen={gen_time:.1f}s")
+              f"| {len(all_boards)} positions | gen={gen_time:.1f}s "
+              f"(total={eh}:{em:02d}:{es:02d})")
 
         # ── Supplementary instant-win positions (iters 270-280) ────────────
         if instant_win_positions > 0 and 270 <= iter_num <= 280:
@@ -1046,7 +1085,7 @@ def train(
         loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         total_loss, total_ploss, total_vloss, n_batches = 0, 0, 0, 0
-        for _epoch in range(5):
+        for _epoch in range(num_epochs):
             for bx, bpi, bv in loader:
                 optimizer.zero_grad()
                 pred_p, pred_v = model(bx)
@@ -1074,6 +1113,44 @@ def train(
         avg_vl = total_vloss / max(n_batches, 1)
         print(f"         loss={avg_loss:.4f} (policy={avg_pl:.4f} value={avg_vl:.4f}) "
               f"| train={train_time:.1f}s")
+
+        # ── Terminal position drilling ──────────────────────────────────
+        if terminal_boards:
+            t2 = time.time()
+            tX = torch.tensor(np.array(terminal_boards),
+                              dtype=torch.float32, device=device)
+            tpi = torch.tensor(np.array(terminal_policies),
+                               dtype=torch.float32, device=device)
+            tv = torch.tensor(np.array(terminal_values),
+                              dtype=torch.float32, device=device)
+
+            t_dataset = torch.utils.data.TensorDataset(tX, tpi, tv)
+            t_loader = torch.utils.data.DataLoader(
+                t_dataset, batch_size=batch_size, shuffle=True)
+
+            t_loss, t_ploss, t_vloss, t_nb = 0, 0, 0, 0
+            for _epoch in range(num_epochs):
+                for bx, bpi, bv in t_loader:
+                    optimizer.zero_grad()
+                    pred_p, pred_v = model(bx)
+                    log_probs = F.log_softmax(pred_p, dim=1)
+                    policy_loss = -torch.sum(bpi * log_probs, dim=1).mean()
+                    value_loss = F.mse_loss(pred_v, bv)
+                    loss = policy_loss + value_loss
+                    loss.backward()
+                    optimizer.step()
+                    t_loss += loss.item()
+                    t_ploss += policy_loss.item()
+                    t_vloss += value_loss.item()
+                    t_nb += 1
+
+            t_time = time.time() - t2
+            t_avg = t_loss / max(t_nb, 1)
+            t_avgp = t_ploss / max(t_nb, 1)
+            t_avgv = t_vloss / max(t_nb, 1)
+            print(f"         terminal drilling: {len(terminal_boards)} positions, "
+                  f"loss={t_avg:.4f} (p={t_avgp:.4f} v={t_avgv:.4f}) "
+                  f"| {t_time:.1f}s")
 
         # Save checkpoint
         model.save_checkpoint(checkpoint_path, iteration=iter_num)

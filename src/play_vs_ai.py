@@ -2,6 +2,7 @@
 Play against your trained AI model
 """
 
+import glob
 import pygame
 import sys
 import os
@@ -9,15 +10,179 @@ import threading
 from typing import Optional
 from extinction_chess import ExtinctionChess, Position, Move, Color, PieceType
 from extinction_chess_gui import ChessGUI, SIDEBAR_X
-from simple_evaluator import SimpleNeuralNetwork, NetworkConfig, PositionEvaluator
-from self_play_trainer import SelfPlayAgent
-from create_v4_model import ExtinctionFocusedEvaluator
+
+WINDOW_WIDTH = 1000
+WINDOW_HEIGHT = 750
+SIM_OPTIONS = [5, 10, 20, 50, 100, 200, 400]
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
+WHITE_COLOR = (255, 255, 255)
+BLACK_COLOR = (0, 0, 0)
+
+
+def discover_models(models_dir):
+    """Find all .pt files in models directory."""
+    models = []
+    for path in sorted(glob.glob(os.path.join(models_dir, "*.pt"))):
+        name = os.path.basename(path)
+        try:
+            import torch
+            data = torch.load(path, weights_only=False, map_location="cpu")
+            meta = data.get("metadata", {})
+            iteration = meta.get("iteration", "?")
+            label = f"iter {iteration}"
+        except Exception:
+            label = name
+        models.append({"path": path, "name": name, "label": label})
+    return models
+
+
+class PlayMenuScreen:
+    """Menu for selecting model, sims, shortcuts, and color."""
+
+    def __init__(self, screen, models):
+        self.screen = screen
+        self.models = models
+        self.font = pygame.font.Font(None, 28)
+        self.small_font = pygame.font.Font(None, 22)
+        self.large_font = pygame.font.Font(None, 48)
+        self.title_font = pygame.font.Font(None, 56)
+
+        self.model_idx = len(models) - 1 if models else 0
+        self.sim_idx = 5  # default to 200
+        self.shortcuts = True
+        self.color = "white"
+
+        self.active = "model"
+
+    def run(self):
+        if not self.models:
+            return None
+
+        clock = pygame.time.Clock()
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return None
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    elif event.key == pygame.K_TAB or event.key == pygame.K_DOWN:
+                        self._next_field()
+                    elif event.key in (pygame.K_UP,):
+                        self._prev_field()
+                    elif event.key == pygame.K_LEFT:
+                        self._adjust(-1)
+                    elif event.key == pygame.K_RIGHT:
+                        self._adjust(1)
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        if self.active == "start":
+                            return {
+                                "model": self.models[self.model_idx]["path"],
+                                "sims": SIM_OPTIONS[self.sim_idx],
+                                "shortcuts": self.shortcuts,
+                                "color": self.color,
+                            }
+                        else:
+                            self._next_field()
+
+            self._draw()
+            pygame.display.flip()
+            clock.tick(30)
+
+    def _next_field(self):
+        order = ["model", "sims", "shortcuts", "color", "start"]
+        idx = order.index(self.active)
+        self.active = order[(idx + 1) % len(order)]
+
+    def _prev_field(self):
+        order = ["model", "sims", "shortcuts", "color", "start"]
+        idx = order.index(self.active)
+        self.active = order[(idx - 1) % len(order)]
+
+    def _adjust(self, delta):
+        if self.active == "model":
+            self.model_idx = (self.model_idx + delta) % len(self.models)
+        elif self.active == "sims":
+            self.sim_idx = max(0, min(len(SIM_OPTIONS) - 1, self.sim_idx + delta))
+        elif self.active == "shortcuts":
+            self.shortcuts = not self.shortcuts
+        elif self.active == "color":
+            self.color = "black" if self.color == "white" else "white"
+
+    def _draw(self):
+        self.screen.fill((240, 240, 245))
+        cx = WINDOW_WIDTH // 2
+        y = 80
+
+        text = self.title_font.render("Play vs AI", True, BLACK_COLOR)
+        self.screen.blit(text, text.get_rect(center=(cx, y)))
+        y += 70
+
+        text = self.small_font.render(
+            "Use LEFT/RIGHT to change, TAB/DOWN to next field, SPACE/ENTER to confirm",
+            True, (100, 100, 100))
+        self.screen.blit(text, text.get_rect(center=(cx, y)))
+        y += 50
+
+        self._draw_selector(y, "Model:", self.models[self.model_idx]["label"],
+                           self.active == "model", (0, 0, 180))
+        y += 70
+
+        self._draw_selector(y, "Simulations:", str(SIM_OPTIONS[self.sim_idx]),
+                           self.active == "sims", BLACK_COLOR)
+        y += 70
+
+        shortcuts_label = "ON" if self.shortcuts else "OFF"
+        shortcuts_color = (0, 130, 0) if self.shortcuts else (180, 0, 0)
+        self._draw_selector(y, "Tactical Shortcuts:", shortcuts_label,
+                           self.active == "shortcuts", shortcuts_color)
+        y += 70
+
+        color_display = self.color.upper()
+        color_val = (0, 0, 180) if self.color == "white" else (180, 0, 0)
+        self._draw_selector(y, "Your Color:", color_display,
+                           self.active == "color", color_val)
+        y += 90
+
+        btn_w, btn_h = 250, 50
+        btn_rect = pygame.Rect(cx - btn_w // 2, y, btn_w, btn_h)
+        btn_color = (0, 150, 0) if self.active == "start" else (100, 180, 100)
+        border_color = (0, 100, 0) if self.active == "start" else (80, 130, 80)
+        pygame.draw.rect(self.screen, btn_color, btn_rect, border_radius=8)
+        pygame.draw.rect(self.screen, border_color, btn_rect, 3, border_radius=8)
+        text = self.large_font.render("Start", True, WHITE_COLOR)
+        self.screen.blit(text, text.get_rect(center=btn_rect.center))
+
+    def _draw_selector(self, y, label, value, active, value_color):
+        cx = WINDOW_WIDTH // 2
+        box_w = 500
+        box_h = 55
+        box_rect = pygame.Rect(cx - box_w // 2, y - 5, box_w, box_h)
+
+        if active:
+            pygame.draw.rect(self.screen, (220, 225, 255), box_rect, border_radius=6)
+            pygame.draw.rect(self.screen, (0, 0, 180), box_rect, 2, border_radius=6)
+        else:
+            pygame.draw.rect(self.screen, (250, 250, 250), box_rect, border_radius=6)
+            pygame.draw.rect(self.screen, (180, 180, 180), box_rect, 1, border_radius=6)
+
+        text = self.font.render(label, True, (60, 60, 60))
+        self.screen.blit(text, (cx - box_w // 2 + 15, y + 2))
+
+        arrow_left = self.font.render("<", True, (100, 100, 100) if active else (200, 200, 200))
+        arrow_right = self.font.render(">", True, (100, 100, 100) if active else (200, 200, 200))
+        val_text = self.large_font.render(value, True, value_color)
+
+        val_x = cx + 80
+        self.screen.blit(arrow_left, (val_x - 80, y + 5))
+        self.screen.blit(val_text, val_text.get_rect(center=(val_x, y + 22)))
+        self.screen.blit(arrow_right, (val_x + 80, y + 5))
 
 
 class PlayVsAI(ChessGUI):
     """Modified GUI to play against AI"""
     
-    def __init__(self, game: ExtinctionChess, ai_agent: SelfPlayAgent, human_color: Color = Color.WHITE):
+    def __init__(self, game: ExtinctionChess, ai_agent, human_color: Color = Color.WHITE):
         super().__init__(game)
         self.ai_agent = ai_agent
         self.human_color = human_color
@@ -193,29 +358,46 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='Play Extinction Chess against your AI')
-    parser.add_argument('--model', type=str, default='models/az_latest.pt',
-                       help='Path to model file')
+    parser.add_argument('--model', type=str, default=None,
+                       help='Path to model file (skip menu)')
     parser.add_argument('--color', type=str, default='white',
                        help='Your color: white or black (default: white)')
     parser.add_argument('--sims', type=int, default=200,
                        help='MCTS simulations per move (default: 200)')
-    parser.add_argument('--depth', type=int, default=0,
-                       help='Search depth for minimax (legacy models only)')
-    parser.add_argument('--version', type=int, default=None,
-                       help='Model version to load (legacy)')
     parser.add_argument('--no-shortcuts', action='store_true',
-                       help='Disable tactical shortcuts (test raw network)')
+                       help='Disable tactical shortcuts')
 
     args = parser.parse_args()
 
-    # Determine model path
-    if args.version:
-        import glob
-        model_path = f"models/versions/model_v{args.version}_*.json"
-        matches = glob.glob(model_path)
-        model_path = matches[0] if matches else args.model
-    else:
+    pygame.init()
+
+    if args.model:
+        # Direct mode — skip menu
         model_path = args.model
+        sims = args.sims
+        shortcuts = not args.no_shortcuts
+        human_color_str = args.color.lower()
+    else:
+        # Show menu
+        print("Scanning for models...", flush=True)
+        models = discover_models(MODELS_DIR)
+        if not models:
+            print(f"No .pt files found in {MODELS_DIR}")
+            sys.exit(1)
+        print(f"Found {len(models)} models", flush=True)
+
+        screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Play vs AI — Settings")
+        menu = PlayMenuScreen(screen, models)
+        config = menu.run()
+        if config is None:
+            pygame.quit()
+            sys.exit(0)
+
+        model_path = config["model"]
+        sims = config["sims"]
+        shortcuts = config["shortcuts"]
+        human_color_str = config["color"]
 
     if not os.path.exists(model_path):
         print(f"Model not found at {model_path}")
@@ -224,57 +406,22 @@ def main():
 
     print(f"Loading AI model from {model_path}...")
 
-    if model_path.endswith('.pt'):
-        import torch
-        data = torch.load(model_path, weights_only=False, map_location="cpu")
-        meta = data.get("metadata", {})
+    from alphazero import AlphaZeroNet, AlphaZeroEvaluator
+    model, meta = AlphaZeroNet.load_checkpoint(model_path)
+    evaluator = AlphaZeroEvaluator(model, device="cpu")
+    ai_agent = AlphaZeroAgent(evaluator, num_simulations=sims,
+                             tactical_shortcuts=shortcuts)
+    print(f"Loaded AlphaZero model (iter {meta.get('iteration', '?')}, "
+          f"wr={meta.get('win_rate', '?')})")
+    print(f"Using MCTS with {sims} simulations/move, "
+          f"tactical shortcuts {'ON' if shortcuts else 'OFF'}")
 
-        if meta.get("model_type") == "alphazero":
-            from alphazero import AlphaZeroNet, AlphaZeroEvaluator
-            model, meta = AlphaZeroNet.load_checkpoint(model_path)
-            evaluator = AlphaZeroEvaluator(model, device="cpu")
-            ai_agent = AlphaZeroAgent(evaluator, num_simulations=args.sims,
-                                     tactical_shortcuts=not args.no_shortcuts)
-            print(f"Loaded AlphaZero model (iter {meta.get('iteration', '?')}, "
-                  f"wr={meta.get('win_rate', '?')})")
-            print(f"Using MCTS with {args.sims} simulations/move")
-        elif meta.get("model_type") == "cnn":
-            from torch_model import ChessCNN, CNNEvaluator
-            model, meta = ChessCNN.load_checkpoint(model_path)
-            evaluator = CNNEvaluator(model, device="cpu")
-            print(f"Loaded CNN model (meta: {meta})")
-            if args.depth > 0:
-                from torch_model import SearchAgent
-                ai_agent = SearchAgent(evaluator, depth=args.depth)
-            else:
-                ai_agent = SelfPlayAgent(evaluator, exploration_rate=0)
-        else:
-            from torch_model import ChessNet, TorchEvaluator
-            model, meta = ChessNet.load_checkpoint(model_path, input_size=39, hidden_sizes=[256, 128, 64])
-            evaluator = TorchEvaluator(model, device="cpu")
-            print(f"Loaded MLP model (meta: {meta})")
-            if args.depth > 0:
-                from torch_model import SearchAgent
-                ai_agent = SearchAgent(evaluator, depth=args.depth)
-            else:
-                ai_agent = SelfPlayAgent(evaluator, exploration_rate=0)
-    else:
-        config = NetworkConfig(input_size=39, hidden_sizes=[128, 64, 32])
-        network = SimpleNeuralNetwork(config)
-        network.load(model_path)
-        if args.version == 4:
-            evaluator = ExtinctionFocusedEvaluator(network)
-        else:
-            evaluator = PositionEvaluator(network)
-        ai_agent = SelfPlayAgent(evaluator, exploration_rate=0)
-
-    human_color = Color.WHITE if args.color.lower() == 'white' else Color.BLACK
+    human_color = Color.WHITE if human_color_str == 'white' else Color.BLACK
     ai_color_name = "Black" if human_color == Color.WHITE else "White"
 
-    print(f"\nYou: {args.color.upper()} | AI: {ai_color_name}")
+    print(f"\nYou: {human_color_str.upper()} | AI: {ai_color_name}")
     print("Click to select/move | Right-click to deselect | R to reset | ESC to quit\n")
 
-    pygame.init()
     game = ExtinctionChess()
     gui = PlayVsAI(game, ai_agent, human_color)
     gui.run()

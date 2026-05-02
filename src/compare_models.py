@@ -11,6 +11,7 @@ After both games, press LEFT/RIGHT to review moves. Press SPACE for next opening
 import argparse
 import glob
 import os
+import random
 import sys
 import threading
 from copy import deepcopy
@@ -49,6 +50,55 @@ def discover_models(models_dir):
     return models
 
 
+TACTICAL_LEVELS = ["Win-taking", "Win-taking + Loss avoidance"]
+
+
+def tactical_random_move(game, loss_avoidance=False):
+    """Pick a move for the tactical random opponent.
+
+    Always takes instant wins. With loss_avoidance, also filters out moves
+    that hand the opponent an instant win.
+    """
+    legal_moves = game.get_legal_moves()
+    if not legal_moves:
+        return None
+
+    # Check for instant wins
+    winning_moves = []
+    for move in legal_moves:
+        gc = deepcopy(game)
+        gc.make_move(move)
+        if gc.game_over and gc.winner == game.current_player:
+            winning_moves.append(move)
+    if winning_moves:
+        return random.choice(winning_moves)
+
+    if loss_avoidance:
+        # Filter out moves that give the opponent an instant win
+        safe_moves = []
+        for move in legal_moves:
+            gc = deepcopy(game)
+            gc.make_move(move)
+            if gc.game_over:
+                # This move ends the game but isn't a win for us (draw or loss)
+                continue
+            opponent_has_win = False
+            for opp_move in gc.get_legal_moves():
+                gc2 = deepcopy(gc)
+                gc2.make_move(opp_move)
+                if gc2.game_over and gc2.winner != game.current_player:
+                    opponent_has_win = True
+                    break
+            if not opponent_has_win:
+                safe_moves.append(move)
+        if safe_moves:
+            return random.choice(safe_moves)
+        # All moves lose — just pick any
+        return random.choice(legal_moves)
+
+    return random.choice(legal_moves)
+
+
 class MenuScreen:
     """Model and sim selection menu."""
 
@@ -63,12 +113,16 @@ class MenuScreen:
         self.m1_idx = len(models) - 1 if models else 0  # default to newest
         self.m2_idx = 0  # default to oldest
         self.sim_idx = 5  # default to 200
+        self.mode = "compare"  # "compare" or "tactical"
+        self.tactical_idx = 1  # default to loss avoidance (stronger test)
 
-        # Which selector is active: "m1", "m2", "sims", "start"
-        self.active = "m1"
+        # Which selector is active: "mode", "m1", "m2", "sims", "start"
+        self.active = "mode"
 
     def run(self):
-        """Run menu loop, returns (model1_path, model2_path, sims) or None."""
+        """Run menu loop.
+        Returns dict with mode info, or None if cancelled.
+        """
         if not self.models:
             return None
 
@@ -90,11 +144,20 @@ class MenuScreen:
                         self._adjust(1)
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         if self.active == "start":
-                            return (
-                                self.models[self.m1_idx]["path"],
-                                self.models[self.m2_idx]["path"],
-                                SIM_OPTIONS[self.sim_idx],
-                            )
+                            if self.mode == "compare":
+                                return {
+                                    "mode": "compare",
+                                    "model1": self.models[self.m1_idx]["path"],
+                                    "model2": self.models[self.m2_idx]["path"],
+                                    "sims": SIM_OPTIONS[self.sim_idx],
+                                }
+                            else:
+                                return {
+                                    "mode": "tactical",
+                                    "model1": self.models[self.m1_idx]["path"],
+                                    "sims": SIM_OPTIONS[self.sim_idx],
+                                    "tactical_level": self.tactical_idx,
+                                }
                         else:
                             self._next_field()
 
@@ -102,21 +165,32 @@ class MenuScreen:
             pygame.display.flip()
             clock.tick(30)
 
+    def _field_order(self):
+        if self.mode == "compare":
+            return ["mode", "m1", "m2", "sims", "start"]
+        else:
+            return ["mode", "m1", "tactical", "sims", "start"]
+
     def _next_field(self):
-        order = ["m1", "m2", "sims", "start"]
-        idx = order.index(self.active)
+        order = self._field_order()
+        idx = order.index(self.active) if self.active in order else 0
         self.active = order[(idx + 1) % len(order)]
 
     def _prev_field(self):
-        order = ["m1", "m2", "sims", "start"]
-        idx = order.index(self.active)
+        order = self._field_order()
+        idx = order.index(self.active) if self.active in order else 0
         self.active = order[(idx - 1) % len(order)]
 
     def _adjust(self, delta):
-        if self.active == "m1":
+        if self.active == "mode":
+            self.mode = "tactical" if self.mode == "compare" else "compare"
+            # Reset active field if it's no longer valid
+        elif self.active == "m1":
             self.m1_idx = (self.m1_idx + delta) % len(self.models)
         elif self.active == "m2":
             self.m2_idx = (self.m2_idx + delta) % len(self.models)
+        elif self.active == "tactical":
+            self.tactical_idx = (self.tactical_idx + delta) % len(TACTICAL_LEVELS)
         elif self.active == "sims":
             self.sim_idx = max(0, min(len(SIM_OPTIONS) - 1, self.sim_idx + delta))
 
@@ -124,34 +198,47 @@ class MenuScreen:
         self.screen.fill((240, 240, 245))
 
         cx = WINDOW_WIDTH // 2
-        y = 80
+        y = 60
 
         # Title
-        text = self.title_font.render("Compare Models", True, BLACK)
+        title = "Compare Models" if self.mode == "compare" else "Tactical Shortcut Test"
+        text = self.title_font.render(title, True, BLACK)
         self.screen.blit(text, text.get_rect(center=(cx, y)))
-        y += 80
+        y += 60
 
         # Instructions
         text = self.small_font.render(
             "Use LEFT/RIGHT to change, TAB/DOWN to next field, SPACE/ENTER to confirm",
             True, (100, 100, 100))
         self.screen.blit(text, text.get_rect(center=(cx, y)))
-        y += 50
+        y += 45
+
+        # Mode
+        mode_label = "Model vs Model" if self.mode == "compare" else "Model vs Tactical Random"
+        self._draw_selector(y, "Mode:", mode_label,
+                           self.active == "mode", (100, 0, 150))
+        y += 65
 
         # Model 1
-        self._draw_selector(y, "Model 1 (Blue):", self.models[self.m1_idx]["label"],
+        m1_color_label = "Model 1 (Blue):" if self.mode == "compare" else "Model (Blue):"
+        self._draw_selector(y, m1_color_label, self.models[self.m1_idx]["label"],
                            self.active == "m1", (0, 0, 180))
-        y += 70
+        y += 65
 
-        # Model 2
-        self._draw_selector(y, "Model 2 (Red):", self.models[self.m2_idx]["label"],
-                           self.active == "m2", (180, 0, 0))
-        y += 70
+        if self.mode == "compare":
+            # Model 2
+            self._draw_selector(y, "Model 2 (Red):", self.models[self.m2_idx]["label"],
+                               self.active == "m2", (180, 0, 0))
+        else:
+            # Tactical level
+            self._draw_selector(y, "Opponent:", TACTICAL_LEVELS[self.tactical_idx],
+                               self.active == "tactical", (180, 0, 0))
+        y += 65
 
         # Sims
         self._draw_selector(y, "Simulations:", str(SIM_OPTIONS[self.sim_idx]),
                            self.active == "sims", BLACK)
-        y += 90
+        y += 80
 
         # Start button
         btn_w, btn_h = 250, 50
@@ -163,8 +250,8 @@ class MenuScreen:
         text = self.large_font.render("Start", True, WHITE)
         self.screen.blit(text, text.get_rect(center=btn_rect.center))
 
-        # Warning if same model
-        if self.m1_idx == self.m2_idx:
+        # Warning if same model (compare mode only)
+        if self.mode == "compare" and self.m1_idx == self.m2_idx:
             y += 70
             text = self.small_font.render("(Same model selected for both — mirror match)",
                                           True, (180, 100, 0))
@@ -201,16 +288,22 @@ class MenuScreen:
 class CompareGUI(ChessGUI):
     """GUI for setting up opening positions, then watching models play live."""
 
-    def __init__(self, game, eval1, eval2, sims, meta1, meta2):
+    def __init__(self, game, eval1, eval2, sims, meta1, meta2,
+                 tactical_mode=False, tactical_level=0):
         super().__init__(game)
         # Override window size
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Compare Models — Play an opening, then press SPACE")
+        if tactical_mode:
+            pygame.display.set_caption("Tactical Test — Play an opening, then press SPACE")
+        else:
+            pygame.display.set_caption("Compare Models — Play an opening, then press SPACE")
         self.eval1 = eval1
         self.eval2 = eval2
         self.sims = sims
         self.meta1 = meta1
         self.meta2 = meta2
+        self.tactical_mode = tactical_mode
+        self.tactical_level = tactical_level  # 0=win-taking, 1=win-taking+loss avoidance
 
         # State machine: setup -> game_a -> game_a_done -> game_b -> review
         self.phase = "setup"
@@ -289,8 +382,16 @@ class CompareGUI(ChessGUI):
     def _compute_move(self):
         try:
             is_model1_turn = (self.game.current_player == Color.WHITE) == self.m1_is_white
-            evaluator = self.eval1 if is_model1_turn else self.eval2
             who = "M1" if is_model1_turn else "M2"
+
+            # Tactical mode: opponent uses tactical random instead of MCTS
+            if self.tactical_mode and not is_model1_turn:
+                loss_avoidance = (self.tactical_level >= 1)
+                move = tactical_random_move(self.game, loss_avoidance=loss_avoidance)
+                self.pending_move = (move, who, 0, 0.0)
+                return
+
+            evaluator = self.eval1 if is_model1_turn else self.eval2
 
             mv, value = mcts_search(self.game, evaluator, num_simulations=self.sims,
                                     dirichlet_alpha=0, noise_weight=0,
@@ -687,8 +788,13 @@ def main():
     pygame.init()
 
     if args.model1 and args.model2 and args.sims:
-        # Direct mode — skip menu
-        m1_path, m2_path, sims = args.model1, args.model2, args.sims
+        # Direct mode — skip menu, compare mode
+        config = {
+            "mode": "compare",
+            "model1": args.model1,
+            "model2": args.model2,
+            "sims": args.sims,
+        }
     else:
         # Show menu
         print("Scanning for models...", flush=True)
@@ -701,21 +807,33 @@ def main():
         screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Compare Models — Select Models")
         menu = MenuScreen(screen, models)
-        result = menu.run()
-        if result is None:
+        config = menu.run()
+        if config is None:
             pygame.quit()
             sys.exit(0)
-        m1_path, m2_path, sims = result
+
+    m1_path = config["model1"]
+    sims = config["sims"]
+    tactical_mode = config["mode"] == "tactical"
 
     print(f"Loading model 1: {m1_path}")
     model1, meta1 = AlphaZeroNet.load_checkpoint(m1_path)
     eval1 = AlphaZeroEvaluator(model1, device="cpu")
     print(f"  Iteration: {meta1.get('iteration', '?')}", flush=True)
 
-    print(f"Loading model 2: {m2_path}")
-    model2, meta2 = AlphaZeroNet.load_checkpoint(m2_path)
-    eval2 = AlphaZeroEvaluator(model2, device="cpu")
-    print(f"  Iteration: {meta2.get('iteration', '?')}", flush=True)
+    if tactical_mode:
+        tactical_level = config["tactical_level"]
+        level_name = TACTICAL_LEVELS[tactical_level]
+        eval2 = None
+        meta2 = {"iteration": f"Tactical ({level_name})"}
+        print(f"Opponent: {level_name}")
+    else:
+        m2_path = config["model2"]
+        print(f"Loading model 2: {m2_path}")
+        model2, meta2 = AlphaZeroNet.load_checkpoint(m2_path)
+        eval2 = AlphaZeroEvaluator(model2, device="cpu")
+        print(f"  Iteration: {meta2.get('iteration', '?')}", flush=True)
+        tactical_level = 0
 
     print(f"\nSims: {sims}")
     print(f"Play opening moves, then press SPACE to watch the models play.")
@@ -723,7 +841,8 @@ def main():
     print(f"Press SPACE for a new opening, ESC to quit.\n")
 
     game = ExtinctionChess()
-    gui = CompareGUI(game, eval1, eval2, sims, meta1, meta2)
+    gui = CompareGUI(game, eval1, eval2, sims, meta1, meta2,
+                     tactical_mode=tactical_mode, tactical_level=tactical_level)
     gui.run()
 
 
