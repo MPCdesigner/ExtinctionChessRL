@@ -1,0 +1,60 @@
+Extinction Chess AlphaZero — Job History
+=========================================
+
+Training jobs on WATonomous cluster. Only significant ext-chess runs listed
+(short-lived failures, gpu-check, ext-compare, and wrap jobs omitted).
+
+Iters 1-24 were on Modal (A10G), no SLURM job.
+
+Job       Iters      Node           Start               End                 Duration  State       Notes
+------    --------   ------------   ------------------  ------------------  --------  ----------  -----
+460171     25-55     delta-slurm1   Apr 19 18:00        Apr 20 18:00        24h       TIMEOUT     Phase 2
+460253     56-72     delta-slurm1   Apr 20 22:04        Apr 21 22:04        24h       TIMEOUT     Phase 3
+460591     73        delta-slurm1   Apr 22 16:26        Apr 22 16:29        ~3min     CANCELLED   Single iter, then cancelled
+460593     74-90     delta-slurm1   Apr 22 16:29        Apr 23 16:24        ~24h      COMPLETED   Phase 4 (C++ MCTS)
+460658     91-100    delta-slurm1   Apr 23 16:24        Apr 24 06:32        ~14h      CANCELLED
+460833    101-144    delta-slurm1   Apr 24 06:36        Apr 25 06:31        ~24h      COMPLETED   Phase 5 (C++ batched self-play)
+461109    145-190    delta-slurm1   Apr 25 06:31        Apr 26 06:26        ~24h      COMPLETED
+461186    191-204    delta-slurm1   Apr 26 06:26        Apr 26 13:42        ~7h       CANCELLED
+461197    205-235    trpro-slurm1   Apr 26 13:43        Apr 27 04:50        ~15h      CANCELLED   Phase 6 (RTX 3090); iter 235 gen finished but training cut off
+461255    235-244    delta-slurm1   Apr 27 04:58        Apr 28 04:53        ~24h      COMPLETED   Phase 7 (800 sims, LR 0.0001); re-ran iter 235
+461345    245-254    delta-slurm1   Apr 28 04:53        Apr 29 04:48        ~24h      COMPLETED
+461388    255-261    delta-slurm1   Apr 29 04:48        Apr 29 23:39        ~19h      OOM         Bumped to 32GB after
+461413    262-271    delta-slurm1   Apr 30 01:43        May 01 00:42        ~23h      COMPLETED
+461544    272-280    delta-slurm1   May 01 01:41        May 01 22:48        ~21h      COMPLETED
+461649    281-290    delta-slurm1   May 01 23:19        May 02 22:11        ~23h      COMPLETED   Phase 8 (10 epochs)
+465555    291-301    delta-slurm1   May 02 22:11        May 03 ~21:00       ~23h      COMPLETED   Phase 9, terminal drilling
+494551    —          delta-slurm1   May 03 ~21:00       May 03 ~21:30       ~30min    CANCELLED   Phase 10 attempt; num_parallel=200 leaked memory, killed
+496370    —          delta-slurm1   May 03 ~21:30       May 03 ~21:40       ~10min    CANCELLED   num_parallel=100 attempt; cancelled to apply buffer fix
+496569    302        delta-slurm1   May 03 ~21:50       May 04 ~03:20       ~5.5h     COMPLETED   num_parallel=200 + buffer fix; gen=19884s (too slow), 21GB RSS
+502592    —          delta-slurm1   May 04 ~03:20       May 04 ~03:20       <1min     FAILED      Missing state_encoder.py upload; auto-resubmit loop
+502865    303        delta-slurm1   May 04 ~03:30       May 04 ~08:20       ~4.8h     COMPLETED   Phase 10, num_parallel=100; gen=17269s
+504246    304-       delta-slurm1   May 04 ~08:30       (running)           —         RUNNING     Phase 10, num_parallel=50
+
+
+Log Access
+----------
+Logs are scattered across three directories. Use these commands to view the last 10 lines.
+
+tail -10 ~/extinction-chess/train_460171.log        # 460171   iters 25-55
+tail -10 ~/train_460253.log                         # 460253   iters 56-72
+tail -10 ~/train_460591.log                         # 460591   iter  73
+tail -10 ~/extinction-chess/train_460593.log        # 460593   iters 74-90
+tail -10 ~/extinction-chess/src-old/train_460658.log  # 460658 iters 91-100
+tail -10 ~/extinction-chess/src/train_460833.log    # 460833   iters 101-144
+tail -10 ~/extinction-chess/src/train_461109.log    # 461109   iters 145-190
+tail -10 ~/extinction-chess/src/train_461186.log    # 461186   iters 191-204
+tail -10 ~/train_461197.log                         # 461197   iters 205-235
+tail -10 ~/train_461255.log                         # 461255   iters 235-244
+tail -10 ~/extinction-chess/src/train_461345.log    # 461345   iters 245-254
+tail -10 ~/train_461388.log                         # 461388   iters 255-261
+tail -10 ~/train_461413.log                         # 461413   iters 262-271
+tail -10 ~/train_461544.log                         # 461544   iters 272-280
+tail -10 ~/train_461649.log                         # 461649   iters 281-290
+tail -10 ~/train_465555.log                         # 465555   iters 291-301
+tail -10 ~/train_494551.log                         # 494551   (no iters, leaked memory)
+tail -10 ~/train_496370.log                         # 496370   (cancelled)
+tail -10 ~/train_496569.log                         # 496569   iter 302
+tail -10 ~/train_502592.log                         # 502592   (failed, missing state_encoder)
+tail -10 ~/train_502865.log                         # 502865   iter 303
+tail -10 ~/train_504246.log                         # 504246   iters 304+

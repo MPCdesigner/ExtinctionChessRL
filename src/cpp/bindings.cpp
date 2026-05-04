@@ -404,20 +404,11 @@ PYBIND11_MODULE(_ext_chess, m) {
              py::arg("max_moves") = 200,
              py::arg("mcts_batch_size") = 8)
 
-        .def("collect_leaves", [](SelfPlayManager& mgr, int max_batch) {
-            // Allocate output buffer
-            py::array_t<float> boards({max_batch, NC, 8, 8});
-            auto buf = boards.mutable_data();
-            int num_leaves = mgr.collect_leaves(buf, max_batch);
-            if (num_leaves == 0) {
-                return py::array_t<float>({0, NC, 8, 8});
-            }
-            // Return only the filled portion
-            py::array_t<float> result({num_leaves, NC, 8, 8});
-            std::memcpy(result.mutable_data(), buf,
-                        num_leaves * ENC_SIZE * sizeof(float));
-            return result;
-        }, py::arg("max_batch") = 256)
+        .def("collect_leaves", [](SelfPlayManager& mgr, py::array_t<float> buf, int max_batch) {
+            // Write directly into caller-provided buffer (avoids per-call allocation)
+            int num_leaves = mgr.collect_leaves(buf.mutable_data(), max_batch);
+            return num_leaves;
+        }, py::arg("buf"), py::arg("max_batch") = 256)
 
         .def("process_results", [](SelfPlayManager& mgr,
                                    py::array_t<float, py::array::c_style> policies,

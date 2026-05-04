@@ -8,7 +8,9 @@ Phase 4: Cluster (2080 Ti), 400 games, 400 sims, C++ MCTS — iters 74-100
 Phase 5: Cluster (2080 Ti), 400 games, 400 sims, C++ batched self-play — iters 101-204
 Phase 6: Cluster (RTX 3090), 400 games, 400 sims, C++ batched self-play — iters 205-234
 Phase 7: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001 (10x reduction from 0.001) — iters 235-280
-Phase 8: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001, 10 epochs (up from 5) — iters 281+
+Phase 8: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001, 10 epochs (up from 5) — iters 281-290
+Phase 9: Cluster (2080 Ti), 400 games, 800 sims, LR 0.0001, 10 epochs + terminal drilling — iters 291-301
+Phase 10: Cluster (2080 Ti), 400 games, 800 sims, 115-ch history planes, num_parallel=100 — iters 303+ (iter 302 had num_parallel=200)
 
 Note: In the training log, the "batched self-play: NNNN NN evals" line prints
 BEFORE the [iter N] line it belongs to. The NNEvals column maps each count to
@@ -283,3 +285,17 @@ Iter  W    B    D   Positions  GenTime  TrainT    NNEvals     Loss    Policy  Va
  288  193  207   0    11913    8356.0s   53.7s    9043633   2.5421  2.3432  0.1989
  289  191  209   0    11419    8538.3s   51.4s    8661195   2.5612  2.3417  0.2195
  290  193  207   0    12459    9192.6s   56.0s    9459419   2.5394  2.3411  0.1983  100% vs random, new best
+ 291  192  208   0    12036    6774.8s   55.0s    9138036   2.7132  2.4583  0.2549  Terminal drilling active
+ 292  198  202   0    10508    6868.9s   47.7s    7885468   2.7947  2.5307  0.2640
+ 293  196  202   2    11949    7721.0s   54.1s    9018813   2.5938  2.3599  0.2339
+ 294  187  212   1    11412    7147.2s   51.6s    8608444   2.5110  2.2892  0.2219
+ 295  194  205   1    12017    7659.6s   54.3s    9059297   2.4568  2.2397  0.2171
+ 296  194  205   1    12039    7767.2s   54.6s    9070663   2.6011  2.3489  0.2522
+ 297  220  179   1    11661    7483.3s   52.6s    8763677   2.5462  2.3155  0.2307
+ 298  232  166   2    11368    7434.1s   51.3s    8547344   2.4621  2.2402  0.2219
+ 299  208  190   2    11398    7397.5s   51.5s    8546494   2.4346  2.2033  0.2313
+ 300  209  191   0    10335    7046.3s   46.7s    7721551   2.4069  2.1734  0.2334  100% vs random, new best
+ 301  213  185   2    10933    7339.6s   49.3s    8199565   2.4085  2.1906  0.2179
+ 302  225  174   1    11805   19884.8s   53.9s    8893213   2.4286  2.2070  0.2217  Phase 10: 115-ch history planes; gen slow (num_parallel=200 reverted to 100)
+ 303  230  168   2    12253   17268.9s   55.6s    9244837   2.4108  2.1894  0.2214  num_parallel=100; still slow
+ 304  227  171   2    11628   16332.9s   53.2s    8769012   2.3350  2.1054  0.2296  num_parallel=50; 115ch encoding is the bottleneck

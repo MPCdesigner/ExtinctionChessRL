@@ -244,26 +244,39 @@ class AlphaZeroNet(nn.Module):
         torch.save({"state_dict": self.state_dict(), "metadata": metadata}, path)
 
     @classmethod
-    def load_checkpoint(cls, path) -> Tuple["AlphaZeroNet", dict]:
+    def load_checkpoint(cls, path, migrate: bool = False) -> Tuple["AlphaZeroNet", dict]:
         data = torch.load(path, weights_only=False, map_location="cpu")
         meta = data.get("metadata", {})
         old_in_channels = meta.get("in_channels", 14)
-        net = cls(
-            in_channels=NUM_INPUT_CHANNELS,
-            num_filters=meta.get("num_filters", 256),
-            num_blocks=meta.get("num_blocks", 20),
-            policy_size=meta.get("policy_size", POLICY_SIZE),
-        )
-        state = data["state_dict"]
 
-        # Zero-init weight expansion for old checkpoints with fewer input channels
-        if old_in_channels < NUM_INPUT_CHANNELS:
+        if migrate and old_in_channels < NUM_INPUT_CHANNELS:
+            # Training path: expand to current channel count
+            net = cls(
+                in_channels=NUM_INPUT_CHANNELS,
+                num_filters=meta.get("num_filters", 256),
+                num_blocks=meta.get("num_blocks", 20),
+                policy_size=meta.get("policy_size", POLICY_SIZE),
+            )
+            state = data["state_dict"]
             old_conv_w = state["input_conv.weight"]  # [filters, old_ch, 3, 3]
             new_conv_w = torch.zeros_like(net.input_conv.weight)  # [filters, new_ch, 3, 3]
-            new_conv_w[:, :old_in_channels, :, :] = old_conv_w
+            # Old layout (14ch): 0-11 pieces, 12 current_player, 13 endangered
+            # New layout (115ch): 0-11 pieces, 12-107 history, 108 player, 109 endangered, 110-113 castling, 114 halfmove
+            new_conv_w[:, :12, :, :] = old_conv_w[:, :12, :, :]   # piece planes stay at 0-11
+            new_conv_w[:, 108, :, :] = old_conv_w[:, 12, :, :]    # current player: 12 → 108
+            new_conv_w[:, 109, :, :] = old_conv_w[:, 13, :, :]    # endangered: 13 → 109
             state["input_conv.weight"] = new_conv_w
             print(f"  Checkpoint migration: {old_in_channels} → {NUM_INPUT_CHANNELS} "
-                  f"input channels (zero-init expansion)")
+                  f"input channels (zero-init expansion, remapped ch12→108, ch13→109)")
+        else:
+            # Native path: load at checkpoint's own channel count (faster inference)
+            net = cls(
+                in_channels=old_in_channels,
+                num_filters=meta.get("num_filters", 256),
+                num_blocks=meta.get("num_blocks", 20),
+                policy_size=meta.get("policy_size", POLICY_SIZE),
+            )
+            state = data["state_dict"]
 
         net.load_state_dict(state)
         return net, meta
@@ -279,7 +292,8 @@ class AlphaZeroEvaluator:
     def __init__(self, model: AlphaZeroNet, device: str = "cpu"):
         self.model = model.to(device)
         self.device = device
-        self.encoder = StateEncoder()
+        self.in_channels = model.in_channels
+        self.encoder = StateEncoder(num_channels=model.in_channels)
         self.model.eval()
 
     def evaluate(self, game: ExtinctionChess) -> float:
@@ -684,7 +698,7 @@ def _self_play_worker(model_path: str, device: str, num_games: int,
                       num_simulations: int, temp_threshold: int,
                       result_queue: Queue):
     """Worker process: loads model, plays num_games, puts results on queue."""
-    model, _ = AlphaZeroNet.load_checkpoint(model_path)
+    model, _ = AlphaZeroNet.load_checkpoint(model_path, migrate=True)
     model = model.to(device)
     model.eval()
     evaluator = AlphaZeroEvaluator(model, device=device)
@@ -773,23 +787,29 @@ def batched_self_play(model, device, games_per_iteration: int,
     )
 
     total_evals = 0
-    while not manager.is_done():
-        # C++ collects positions from all active games
-        boards = manager.collect_leaves(max_batch)
+    # Pre-allocate buffer for collect_leaves (reused every cycle)
+    leaf_buf = np.zeros((max_batch, NUM_INPUT_CHANNELS, 8, 8), dtype=np.float32)
 
-        if len(boards) == 0:
+    while not manager.is_done():
+        # C++ writes positions into pre-allocated buffer
+        num_leaves = manager.collect_leaves(leaf_buf, max_batch)
+
+        if num_leaves == 0:
             continue
+
+        # Slice the filled portion (view, no copy)
+        boards = leaf_buf[:num_leaves]
 
         # Batch GPU inference
         with torch.no_grad():
-            t = torch.tensor(np.asarray(boards), dtype=torch.float32, device=device)
+            t = torch.tensor(boards, dtype=torch.float32, device=device)
             policies, values = model(t)
             policies = policies.cpu().numpy()
             values = values.cpu().numpy()
 
         # Feed results back to C++
         manager.process_results(policies, values)
-        total_evals += len(boards)
+        total_evals += num_leaves
 
     print(f"         batched self-play: {total_evals} NN evals, "
           f"{manager.games_completed()} games", flush=True)
@@ -952,7 +972,7 @@ def train(
 
     # Load or create model
     if resume and os.path.exists(checkpoint_path):
-        model, meta = AlphaZeroNet.load_checkpoint(checkpoint_path)
+        model, meta = AlphaZeroNet.load_checkpoint(checkpoint_path, migrate=True)
         start_iter = meta.get("iteration", 0)
         print(f"Resumed from iteration {start_iter}")
     else:
