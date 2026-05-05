@@ -299,3 +299,4 @@ Iter  W    B    D   Positions  GenTime  TrainT    NNEvals     Loss    Policy  Va
  302  225  174   1    11805   19884.8s   53.9s    8893213   2.4286  2.2070  0.2217  Phase 10: 115-ch history planes; gen slow (num_parallel=200 reverted to 100)
  303  230  168   2    12253   17268.9s   55.6s    9244837   2.4108  2.1894  0.2214  num_parallel=100; still slow
  304  227  171   2    11628   16332.9s   53.2s    8769012   2.3350  2.1054  0.2296  num_parallel=50; 115ch encoding is the bottleneck
+ 305  197  200   3    12697   17444.1s   57.9s    9583793   2.3453  2.1101  0.2352  4-thread attempt (not working)

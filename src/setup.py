@@ -14,18 +14,21 @@ import sys
 from setuptools import setup
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
-extra_args = []
+extra_compile = []
+extra_link = []
 if sys.platform == "win32":
-    extra_args = ["/O2"]
+    extra_compile = ["/O2"]
 else:
-    extra_args = ["-O3", "-ffast-math"]
+    extra_compile = ["-O3", "-ffast-math", "-pthread"]
+    extra_link = ["-pthread"]
 
 ext = Pybind11Extension(
     "_ext_chess",
     sources=["cpp/engine.cpp", "cpp/mcts.cpp", "cpp/self_play.cpp", "cpp/bindings.cpp"],
     include_dirs=["cpp"],
     cxx_std=17,
-    extra_compile_args=extra_args,
+    extra_compile_args=extra_compile,
+    extra_link_args=extra_link,
 )
 
 setup(

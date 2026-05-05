@@ -763,7 +763,7 @@ def batched_self_play(model, device, games_per_iteration: int,
                       dirichlet_alpha: float = 0.3, noise_weight: float = 0.25,
                       temp_threshold: int = 30, max_moves: int = 200,
                       num_parallel: int = 50, max_batch: int = 512,
-                      mcts_batch_size: int = 8):
+                      mcts_batch_size: int = 8, num_threads: int = 1):
     """
     Batched self-play using C++ SelfPlayManager.
 
@@ -784,6 +784,7 @@ def batched_self_play(model, device, games_per_iteration: int,
         temp_threshold=temp_threshold,
         max_moves=max_moves,
         mcts_batch_size=mcts_batch_size,
+        num_threads=num_threads,
     )
 
     total_evals = 0
@@ -1027,6 +1028,7 @@ def train(
                 temp_threshold=30,
                 num_parallel=min(50, games_per_iteration),
                 max_batch=512,
+                num_threads=4,
             )
             for boards, policies, players, outcome in game_results:
                 for b, pi, player in zip(boards, policies, players):

@@ -4,6 +4,7 @@
 #include <vector>
 #include <array>
 #include <memory>
+#include <thread>
 
 namespace ext {
 
@@ -77,7 +78,8 @@ public:
                     int num_simulations, float c_puct,
                     float dirichlet_alpha, float noise_weight,
                     bool tactical_shortcuts, int temp_threshold,
-                    int max_moves, int mcts_batch_size);
+                    int max_moves, int mcts_batch_size,
+                    int num_threads = 1);
 
     // Collect positions needing NN evaluation from all active games.
     // Returns the number of positions. Boards are written to out_boards
@@ -109,6 +111,7 @@ private:
     int   temp_threshold_;
     int   max_moves_;
     int   mcts_batch_size_;
+    int   num_threads_;
 
     // State
     std::vector<ParallelGame> games_;
@@ -116,6 +119,17 @@ private:
     std::vector<GameRecord>   completed_;
     int games_started_;
     int games_completed_;
+
+    // Pre-allocated per-thread buffers for parallel collect_leaves
+    struct ThreadBuffer {
+        std::vector<float> boards;
+        std::vector<LeafMapping> maps;
+        int count;
+    };
+    std::vector<ThreadBuffer> thread_bufs_;
+    int collect_call_count_ = 0;  // diagnostic counter
+    double collect_time_us_ = 0;  // cumulative microseconds in collect_leaves
+    double process_time_us_ = 0;  // cumulative microseconds in process_results
 
     // Helpers
     void start_new_game(int slot);

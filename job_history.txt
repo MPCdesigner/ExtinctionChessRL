@@ -29,7 +29,11 @@ Job       Iters      Node           Start               End                 Dura
 496569    302        delta-slurm1   May 03 ~21:50       May 04 ~03:20       ~5.5h     COMPLETED   num_parallel=200 + buffer fix; gen=19884s (too slow), 21GB RSS
 502592    —          delta-slurm1   May 04 ~03:20       May 04 ~03:20       <1min     FAILED      Missing state_encoder.py upload; auto-resubmit loop
 502865    303        delta-slurm1   May 04 ~03:30       May 04 ~08:20       ~4.8h     COMPLETED   Phase 10, num_parallel=100; gen=17269s
-504246    304-       delta-slurm1   May 04 ~08:30       (running)           —         RUNNING     Phase 10, num_parallel=50
+504246    304        delta-slurm1   May 04 ~08:30       May 04 ~13:00       ~4.5h     COMPLETED   Phase 10, num_parallel=50; gen=16333s
+504422    305        delta-slurm1   May 04 ~13:10       May 04 ~18:00       ~4.8h     COMPLETED   4-thread collect_leaves (wrong target); gen=17444s
+504483    —          delta-slurm1   May 04 ~18:00       May 04 ~18:10       ~10min    CANCELLED   Diagnostic prints only; confirmed num_threads=4, nt=4
+504488    305(pt)    delta-slurm1   May 04 ~18:10       May 05 ~02:30       ~8h       CANCELLED   Timing diagnostics: collect=6.4s, process=2819.5s (found bottleneck)
+504546    306-       delta-slurm1   May 05 ~02:30       (running)           —         RUNNING     4-thread process_results; 345% CPU confirmed
 
 
 Log Access
@@ -57,4 +61,7 @@ tail -10 ~/train_496370.log                         # 496370   (cancelled)
 tail -10 ~/train_496569.log                         # 496569   iter 302
 tail -10 ~/train_502592.log                         # 502592   (failed, missing state_encoder)
 tail -10 ~/train_502865.log                         # 502865   iter 303
-tail -10 ~/train_504246.log                         # 504246   iters 304+
+tail -10 ~/train_504246.log                         # 504246   iter 304
+tail -10 ~/train_504422.log                         # 504422   iter 305
+tail -10 ~/train_504488.log                         # 504488   (timing diagnostics)
+tail -10 ~/train_504546.log                         # 504546   iters 306+
