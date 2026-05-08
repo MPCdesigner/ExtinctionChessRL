@@ -33,7 +33,9 @@ Job       Iters      Node           Start               End                 Dura
 504422    305        delta-slurm1   May 04 ~13:10       May 04 ~18:00       ~4.8h     COMPLETED   4-thread collect_leaves (wrong target); gen=17444s
 504483    —          delta-slurm1   May 04 ~18:00       May 04 ~18:10       ~10min    CANCELLED   Diagnostic prints only; confirmed num_threads=4, nt=4
 504488    305(pt)    delta-slurm1   May 04 ~18:10       May 05 ~02:30       ~8h       CANCELLED   Timing diagnostics: collect=6.4s, process=2819.5s (found bottleneck)
-504546    306-       delta-slurm1   May 05 ~02:30       (running)           —         RUNNING     4-thread process_results; 345% CPU confirmed
+504546    306-312    delta-slurm1   May 05 ~02:30       May 06 ~02:00       ~24h      COMPLETED   4-thread process_results; gen~10800s; 100% vs random final
+504747    313-319    delta-slurm1   May 06 ~02:00       May 06 ~23:00       ~21h      COMPLETED   Auto-resubmit from 504546; 100% vs random final
+504901    320-       delta-slurm1   May 06 ~23:00       (running)           —         RUNNING     Auto-resubmit from 504747; delayed ~12h by node drain
 
 
 Log Access
@@ -64,4 +66,5 @@ tail -10 ~/train_502865.log                         # 502865   iter 303
 tail -10 ~/train_504246.log                         # 504246   iter 304
 tail -10 ~/train_504422.log                         # 504422   iter 305
 tail -10 ~/train_504488.log                         # 504488   (timing diagnostics)
-tail -10 ~/train_504546.log                         # 504546   iters 306+
+tail -10 ~/train_504546.log                         # 504546   iters 306-312
+tail -10 ~/train_504747.log                         # 504747   iters 313+

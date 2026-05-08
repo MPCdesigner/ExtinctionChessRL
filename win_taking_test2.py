@@ -28,7 +28,7 @@ pygame.init()
 
 # ── Layout constants ──────────────────────────────────────────────────────
 WINDOW_WIDTH = 1100
-WINDOW_HEIGHT = 750
+WINDOW_HEIGHT = 800
 BOARD_SIZE = 560
 SQUARE_SIZE = BOARD_SIZE // 8
 BOARD_X = 30
@@ -67,6 +67,29 @@ def copy_game(game):
     gc.game_over = game.game_over
     gc.winner = game.winner
     return gc
+
+
+def capture_direction(move, player_color):
+    """Classify a capture's direction relative to the capturing player.
+    Returns 'forward', 'backward', or 'sideways'."""
+    dr = move.to_pos.rank - move.from_pos.rank
+    # For black, flip: moving to lower ranks is "forward"
+    if player_color == Color.BLACK:
+        dr = -dr
+    if dr > 0:
+        return 'forward'
+    elif dr < 0:
+        return 'backward'
+    else:
+        return 'sideways'
+
+
+def capture_distance(move):
+    """Distance in steps along the piece's direction (Chebyshev distance).
+    Knights naturally get distance 2."""
+    dr = abs(move.to_pos.rank - move.from_pos.rank)
+    df = abs(move.to_pos.file - move.from_pos.file)
+    return max(dr, df)
 
 
 def find_winning_moves(game, target_piece_types=None):
@@ -128,12 +151,20 @@ class ConfigScreen:
         self.piece_labels = ["King", "Queen", "Rook", "Bishop", "Knight", "Pawn"]
         self.piece_selected = [True] * len(self.piece_types)  # all selected by default
 
+        # Capture direction filter
+        self.direction_labels = ["Forward", "Sideways", "Backward"]
+        self.direction_selected = [True, True, True]
+
+        # Min capture distance (1 = no filter)
+        self.min_distance = 1
+        self.distance_options = [1, 2, 3, 4, 5]
+
         # Scroll for model list
         self.scroll_offset = 0
         self.max_visible_models = 12
 
     def run(self):
-        """Returns (model_paths, sim_counts, num_positions, save_results, target_pieces) or None."""
+        """Returns (model_paths, sim_counts, num_positions, save_results, target_pieces, target_directions) or None."""
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -217,7 +248,11 @@ class ConfigScreen:
                 target = None if all(self.piece_selected) else set(
                     pt for pt, sel in zip(self.piece_types, self.piece_selected) if sel
                 )
-                return (paths, sims, self.num_positions, self.save_results, target)
+                dir_names = ['forward', 'sideways', 'backward']
+                target_dirs = None if all(self.direction_selected) else set(
+                    d for d, sel in zip(dir_names, self.direction_selected) if sel
+                )
+                return (paths, sims, self.num_positions, self.save_results, target, target_dirs, self.min_distance)
 
         # Piece type checkboxes
         piece_start_y = sim_start_y + len(self.all_sims) * 35 + 40
@@ -232,6 +267,22 @@ class ConfigScreen:
         if 550 <= mx <= 800 and save_y <= my <= save_y + 25:
             self.save_results = not self.save_results
             return None
+
+        # Direction checkboxes
+        dir_start_y = save_y + 50
+        for i in range(len(self.direction_labels)):
+            y = dir_start_y + i * 30
+            if 550 <= mx <= 800 and y <= my <= y + 25:
+                self.direction_selected[i] = not self.direction_selected[i]
+                return None
+
+        # Min distance selector
+        dist_y = dir_start_y + len(self.direction_labels) * 30 + 30
+        for i, d in enumerate(self.distance_options):
+            bx = 660 + i * 40
+            if bx <= mx <= bx + 30 and dist_y <= my <= dist_y + 28:
+                self.min_distance = d
+                return None
 
         # Select all / deselect all models
         sel_all_rect = pygame.Rect(50, 65, 80, 25)
@@ -350,12 +401,49 @@ class ConfigScreen:
         label = self.small_font.render("Save results to JSON", True, BLACK)
         self.screen.blit(label, (578, save_y + 3))
 
+        # ── Capture direction ──
+        dir_start_y = save_y + 50
+        text = self.font.render("Capture direction:", True, BLACK)
+        self.screen.blit(text, (550, dir_start_y - 25))
+
+        for i, dlabel in enumerate(self.direction_labels):
+            y = dir_start_y + i * 30
+
+            box_rect = pygame.Rect(550, y + 2, 20, 20)
+            color = CHECKBOX_ON if self.direction_selected[i] else CHECKBOX_OFF
+            pygame.draw.rect(self.screen, color, box_rect)
+            pygame.draw.rect(self.screen, BLACK, box_rect, 1)
+            if self.direction_selected[i]:
+                pygame.draw.line(self.screen, WHITE, (553, y + 12), (557, y + 18), 2)
+                pygame.draw.line(self.screen, WHITE, (557, y + 18), (567, y + 6), 2)
+
+            label = self.small_font.render(dlabel, True, BLACK)
+            self.screen.blit(label, (578, y + 3))
+
+        # ── Min capture distance ──
+        dist_y = dir_start_y + len(self.direction_labels) * 30 + 30
+        text = self.font.render("Min range:", True, BLACK)
+        self.screen.blit(text, (550, dist_y + 2))
+
+        for i, d in enumerate(self.distance_options):
+            bx = 660 + i * 40
+            box_rect = pygame.Rect(bx, dist_y, 30, 28)
+            if d == self.min_distance:
+                pygame.draw.rect(self.screen, CHECKBOX_ON, box_rect, border_radius=4)
+                label = self.font.render(str(d), True, WHITE)
+            else:
+                pygame.draw.rect(self.screen, CHECKBOX_OFF, box_rect, border_radius=4)
+                pygame.draw.rect(self.screen, DARK_GRAY, box_rect, 1, border_radius=4)
+                label = self.font.render(str(d), True, BLACK)
+            self.screen.blit(label, (bx + 15 - label.get_width() // 2, dist_y + 3))
+
         # ── Start button ──
         btn_rect = pygame.Rect(WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT - 70, 200, 45)
         models_selected = any(self.model_selected)
         sims_selected = any(self.sim_selected)
         pieces_selected = any(self.piece_selected)
-        can_start = models_selected and sims_selected and pieces_selected
+        directions_selected = any(self.direction_selected)
+        can_start = models_selected and sims_selected and pieces_selected and directions_selected
 
         color = BTN_COLOR if can_start else BTN_DISABLED
         mx, my = pygame.mouse.get_pos()
@@ -374,6 +462,8 @@ class ConfigScreen:
                 msg = "Select at least one sim count"
             elif not pieces_selected:
                 msg = "Select at least one target piece type"
+            elif not directions_selected:
+                msg = "Select at least one capture direction"
             text = self.small_font.render(msg, True, MISS_RED)
             self.screen.blit(text, (WINDOW_WIDTH // 2 - text.get_width() // 2,
                                     WINDOW_HEIGHT - 20))
@@ -387,11 +477,14 @@ class ConfigScreen:
 
 class WinTakingTest:
     def __init__(self, screen, model_paths, sim_counts, num_positions,
-                 target_piece_types=None):
+                 target_piece_types=None, target_directions=None,
+                 min_capture_distance=1):
         self.screen = screen
         self.sim_counts = sorted(sim_counts)
         self.num_positions = num_positions
         self.target_piece_types = target_piece_types  # None = all types
+        self.target_directions = target_directions    # None = all directions
+        self.min_capture_distance = min_capture_distance  # 1 = no filter
         self.clock = pygame.time.Clock()
 
         self.font = pygame.font.Font(None, 24)
@@ -482,24 +575,28 @@ class WinTakingTest:
             return
 
         # Check for instant win
-        # If filtering by piece type, only stop when ALL winning moves
-        # capture a targeted type (no easy king/queen captures available)
+        # Only stop when ALL winning moves pass our filters (piece type + direction).
+        # Skip if there are also winning moves outside the filter set
+        # (model could just take the easy capture instead).
         all_winners = find_winning_moves(self.game)
-        if self.target_piece_types is not None:
-            winners = [
-                (m, pt) for m, pt in all_winners
-                if pt in self.target_piece_types
-            ]
-            # Skip if there are also winning moves outside the target set
-            # (model could just take the easy capture instead)
-            non_target = [
-                (m, pt) for m, pt in all_winners
-                if pt not in self.target_piece_types
-            ]
-            if non_target:
-                winners = []
-        else:
-            winners = all_winners
+        current = self.game.current_player
+
+        def passes_filters(m, pt):
+            if self.target_piece_types is not None and pt not in self.target_piece_types:
+                return False
+            if self.target_directions is not None:
+                d = capture_direction(m, current)
+                if d not in self.target_directions:
+                    return False
+            if self.min_capture_distance > 1:
+                if capture_distance(m) < self.min_capture_distance:
+                    return False
+            return True
+
+        winners = [(m, pt) for m, pt in all_winners if passes_filters(m, pt)]
+        non_matching = [(m, pt) for m, pt in all_winners if not passes_filters(m, pt)]
+        if non_matching:
+            winners = []
         if winners:
             self.winning_moves = [m for m, _ in winners]
             self.winning_types = [pt for _, pt in winners]
@@ -509,7 +606,8 @@ class WinTakingTest:
             self.test_results_for_position = {}
             side = "White" if self.game.current_player == Color.WHITE else "Black"
             win_strs = ", ".join(
-                f"{m}({pt.value if pt else '?'})" for m, pt in winners
+                f"{m}({pt.value if pt else '?'},{capture_direction(m, current)[0]},d{capture_distance(m)})"
+                for m, pt in winners
             )
             self.status_lines = [
                 f"Position {self.positions_tested + 1}/{self.num_positions} "
@@ -620,9 +718,12 @@ class WinTakingTest:
                     row += "."
             board_repr.append(row)
 
-        side = "white" if self.game.current_player == Color.WHITE else "black"
+        current = self.game.current_player
+        side = "white" if current == Color.WHITE else "black"
         winning_strs = [str(m) for m in self.winning_moves]
         captured_types = [pt.value if pt else "?" for pt in self.winning_types]
+        directions = [capture_direction(m, current) for m in self.winning_moves]
+        distances = [capture_distance(m) for m in self.winning_moves]
 
         record = {
             "position_index": self.positions_tested,
@@ -630,6 +731,8 @@ class WinTakingTest:
             "side_to_move": side,
             "winning_moves": winning_strs,
             "captured_types": captured_types,
+            "directions": directions,
+            "distances": distances,
             "tests": {},
         }
         for (label, sims), result in self.test_results_for_position.items():
@@ -1020,7 +1123,7 @@ def main():
         pygame.quit()
         return
 
-    model_paths, sim_counts, num_positions, save_results, target_pieces = result
+    model_paths, sim_counts, num_positions, save_results, target_pieces, target_dirs, min_dist = result
 
     print(f"Models: {[os.path.basename(p) for p in model_paths]}")
     print(f"Sims: {sim_counts}")
@@ -1030,10 +1133,17 @@ def main():
         print(f"Target captures: {[pt.value for pt in target_pieces]}")
     else:
         print("Target captures: all")
+    if target_dirs:
+        print(f"Capture directions: {target_dirs}")
+    else:
+        print("Capture directions: all")
+    print(f"Min capture range: {min_dist}")
 
     # Run test
     test = WinTakingTest(screen, model_paths, sim_counts, num_positions,
-                         target_piece_types=target_pieces)
+                         target_piece_types=target_pieces,
+                         target_directions=target_dirs,
+                         min_capture_distance=min_dist)
     results = test.run()
 
     # Print summary
