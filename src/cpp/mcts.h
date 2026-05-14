@@ -95,8 +95,8 @@ private:
     // Tactical shortcuts
     struct TacticalResult {
         bool instant_win;
-        Move winning_move;
-        std::vector<Move> safe_moves;  // moves that don't lose in 1-2 ply
+        std::vector<Move> winning_moves;  // all moves that win immediately
+        std::vector<Move> safe_moves;     // moves that don't lose in 1-2 ply
     };
     TacticalResult check_tactics(const Game& g) const;
 };

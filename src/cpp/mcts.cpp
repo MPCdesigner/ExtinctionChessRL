@@ -208,12 +208,17 @@ void MCTS::expand_root(const float* policy_logits) {
     if (tactical_shortcuts_) {
         auto tactics = check_tactics(nodes_[root_].game);
         if (tactics.instant_win) {
+            int num_winners = static_cast<int>(tactics.winning_moves.size());
+            int per_move = num_simulations_ / num_winners;
+            int remainder = num_simulations_ % num_winners;
+
             // Copy root game before reallocation
             Game root_game = nodes_[root_].game;
             nodes_.reserve(nodes_.size() + legal.size());
 
             nodes_[root_].first_child = static_cast<int>(nodes_.size());
             nodes_[root_].num_children = static_cast<int>(legal.size());
+            int win_idx = 0;
             for (size_t i = 0; i < legal.size(); i++) {
                 int ci = allocate_node();
                 nodes_[ci].parent = root_;
@@ -221,10 +226,14 @@ void MCTS::expand_root(const float* policy_logits) {
                 nodes_[ci].prior = 0.0f;
                 nodes_[ci].game = root_game;
                 nodes_[ci].game.make_move(legal[i]);
-                if (legal[i].from == tactics.winning_move.from &&
-                    legal[i].to == tactics.winning_move.to &&
-                    legal[i].promo == tactics.winning_move.promo) {
-                    nodes_[ci].visit_count = num_simulations_;
+                for (auto& wm : tactics.winning_moves) {
+                    if (legal[i].from == wm.from &&
+                        legal[i].to == wm.to &&
+                        legal[i].promo == wm.promo) {
+                        nodes_[ci].visit_count = per_move + (win_idx < remainder ? 1 : 0);
+                        win_idx++;
+                        break;
+                    }
                 }
             }
             nodes_[root_].is_expanded = true;
@@ -406,8 +415,7 @@ MCTS::TacticalResult MCTS::check_tactics(const Game& g) const {
         // 1-ply: this move immediately wins
         if (gc.over && gc.winner == current) {
             result.instant_win = true;
-            result.winning_move = legal[i];
-            return result;
+            result.winning_moves.push_back(legal[i]);
         }
     }
 

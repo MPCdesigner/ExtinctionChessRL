@@ -12,6 +12,9 @@ if __name__ == "__main__":
         resume=True,
         num_workers=4,
         # instant_win_positions=1000,  # Disabled for now; revisit at iter 270
+        hard_win_positions=300,
         max_wall_time=23 * 3600,  # Exit cleanly before 24h SLURM limit
         num_epochs=10,
+        drilling_epochs=5,
+        drilling_lr_factor=0.5,
     )

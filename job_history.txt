@@ -35,7 +35,14 @@ Job       Iters      Node           Start               End                 Dura
 504488    305(pt)    delta-slurm1   May 04 ~18:10       May 05 ~02:30       ~8h       CANCELLED   Timing diagnostics: collect=6.4s, process=2819.5s (found bottleneck)
 504546    306-312    delta-slurm1   May 05 ~02:30       May 06 ~02:00       ~24h      COMPLETED   4-thread process_results; gen~10800s; 100% vs random final
 504747    313-319    delta-slurm1   May 06 ~02:00       May 06 ~23:00       ~21h      COMPLETED   Auto-resubmit from 504546; 100% vs random final
-504901    320-       delta-slurm1   May 06 ~23:00       (running)           —         RUNNING     Auto-resubmit from 504747; delayed ~12h by node drain
+504901    320-326    delta-slurm1   May 07 ~11:00       May 08 ~08:00       ~21h      COMPLETED   Auto-resubmit from 504747; delayed ~12h by node drain
+505790    327-333    delta-slurm1   May 08 ~08:00       May 09 ~05:00       ~21h      COMPLETED   Phase 11: multi-winner tactical shortcut + 200 hard-capture drilling positions
+505894    334-340    delta-slurm1   May 09 ~05:00       May 10 ~02:00       ~21h      COMPLETED   Auto-resubmit from 505790
+506210    341-347    delta-slurm1   May 10 ~02:00       May 11 ~22:30       ~20h      COMPLETED   Auto-resubmit from 505894
+506822    348-355    delta-slurm1   May 12 ~00:00       May 12 ~21:00       ~21h      COMPLETED   Phase 12: reduced drilling (5 epochs, 0.5x LR, 300 hard-captures)
+507589    356-363    delta-slurm1   May 12 ~21:00       May 13 ~06:00       ~9h       COMPLETED   Auto-resubmit from 506822
+508975    364-371    delta-slurm1   May 13 ~06:00       May 14 ~05:00       ~23h      COMPLETED   Auto-resubmit from 507589
+509411    372-       delta-slurm1   May 14 ~05:00       (running)           —         RUNNING     Auto-resubmit from 508975
 
 
 Log Access
@@ -67,4 +74,12 @@ tail -10 ~/train_504246.log                         # 504246   iter 304
 tail -10 ~/train_504422.log                         # 504422   iter 305
 tail -10 ~/train_504488.log                         # 504488   (timing diagnostics)
 tail -10 ~/train_504546.log                         # 504546   iters 306-312
-tail -10 ~/train_504747.log                         # 504747   iters 313+
+tail -10 ~/train_504747.log                         # 504747   iters 313-319
+tail -10 ~/train_504901.log                         # 504901   iters 320-326
+tail -10 ~/train_505790.log                         # 505790   iters 327-333 (Phase 11)
+tail -10 ~/train_505894.log                         # 505894   iters 334-340
+tail -10 ~/train_506210.log                         # 506210   iters 341-347
+tail -10 ~/train_506822.log                         # 506822   iters 348-355 (Phase 12)
+tail -10 ~/train_507589.log                         # 507589   iters 356-363
+tail -10 ~/train_508975.log                         # 508975   iters 364-371
+tail -10 ~/train_509411.log                         # 509411   iters 372+

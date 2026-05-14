@@ -537,14 +537,26 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     # Tactical shortcut: force instant wins (but allow blunders)
     current = game.current_player
     if tactical_shortcuts:
+        winning_moves = []
         for m in legal:
             gc = _copy_game(game)
             if not gc.make_move(m):
                 continue
-
-            # 1-ply: this move immediately wins
             if gc.game_over and gc.winner == current:
-                return [(m, num_simulations)] + [(mm, 0) for mm in legal if mm != m], 1.0
+                winning_moves.append(m)
+        if winning_moves:
+            num_winners = len(winning_moves)
+            per_move = num_simulations // num_winners
+            remainder = num_simulations % num_winners
+            result = []
+            win_idx = 0
+            for m in legal:
+                if m in winning_moves:
+                    result.append((m, per_move + (1 if win_idx < remainder else 0)))
+                    win_idx += 1
+                else:
+                    result.append((m, 0))
+            return result, 1.0
 
     policy_logits, root_value = evaluator.evaluate_with_policy(game)
 
@@ -875,8 +887,79 @@ def test_vs_random(evaluator: AlphaZeroEvaluator, num_games: int = 100,
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Instant-win position generator (supplementary training data)
+# Instant-win position generators (supplementary training data)
 # ═════════════════════════════════════════════════════════════════════════════
+
+
+def generate_hard_win_positions(num_positions: int, max_random_moves: int = 200):
+    """Generate positions where the current player has an instant win involving
+    a 'hard' capture: backward, sideways, or long-range (distance >= 4).
+
+    Plays random moves until a position with at least one qualifying winning
+    capture is found. Policy target is uniform over ALL winning moves in the
+    position (not just qualifying ones).
+
+    Returns (boards, policies, values) in the same format as self-play data.
+    """
+    boards = []
+    policies = []
+    values = []
+
+    while len(boards) < num_positions:
+        game = ExtinctionChess()
+
+        for _ in range(max_random_moves):
+            if game.game_over:
+                break
+
+            legal_moves = game.get_legal_moves()
+            if not legal_moves:
+                break
+
+            # Check if current player has any instant wins
+            current = game.current_player
+            winning_moves = []
+            for m in legal_moves:
+                gc = _copy_game(game)
+                if gc.make_move(m) and gc.game_over and gc.winner == current:
+                    winning_moves.append(m)
+
+            if winning_moves:
+                # Check if any winning move qualifies as "hard"
+                has_hard = False
+                for m in winning_moves:
+                    dr = m.to_pos.rank - m.from_pos.rank
+                    if current == Color.BLACK:
+                        dr = -dr
+                    df = abs(m.to_pos.file - m.from_pos.file)
+                    dist = max(abs(m.to_pos.rank - m.from_pos.rank), df)
+
+                    if dist >= 4 or dr <= 0:  # long-range, sideways, or backward
+                        has_hard = True
+                        break
+
+                if has_hard:
+                    board = np.asarray(game.encode_board(), dtype=np.float32)
+
+                    # Policy: uniform over ALL winning moves
+                    policy = np.zeros(POLICY_SIZE, dtype=np.float32)
+                    for wm in winning_moves:
+                        policy[move_to_index(wm)] = 1.0
+                    policy /= policy.sum()
+
+                    # Value: +1 from current player's perspective
+                    value = 1.0 if current == Color.WHITE else -1.0
+
+                    boards.append(board)
+                    policies.append(policy)
+                    values.append(value)
+                    break  # Start a new game
+
+            # No qualifying win — make a random move
+            move = random.choice(legal_moves)
+            game.make_move(move)
+
+    return boards[:num_positions], policies[:num_positions], values[:num_positions]
 
 def _copy_game(game):
     """Copy a C++ game object (can't use deepcopy)."""
@@ -959,8 +1042,11 @@ def train(
     eval_simulations: int = 100,
     num_workers: int = 1,
     instant_win_positions: int = 0,
+    hard_win_positions: int = 0,
     max_wall_time: float = 0,
     num_epochs: int = 5,
+    drilling_epochs: int = 5,
+    drilling_lr_factor: float = 0.5,
 ):
     job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1150,6 +1236,19 @@ def train(
               f"| train={train_time:.1f}s")
 
         # ── Terminal position drilling ──────────────────────────────────
+        # Add synthetic hard-capture positions to the drilling pool
+        if hard_win_positions > 0:
+            t_hw = time.time()
+            hw_boards, hw_policies, hw_values = generate_hard_win_positions(
+                hard_win_positions
+            )
+            terminal_boards.extend(hw_boards)
+            terminal_policies.extend(hw_policies)
+            terminal_values.extend(hw_values)
+            hw_time = time.time() - t_hw
+            print(f"         +{len(hw_boards)} hard-capture positions "
+                  f"({len(terminal_boards)} total drilling) | {hw_time:.1f}s")
+
         if terminal_boards:
             t2 = time.time()
             tX = torch.tensor(np.array(terminal_boards),
@@ -1163,8 +1262,13 @@ def train(
             t_loader = torch.utils.data.DataLoader(
                 t_dataset, batch_size=batch_size, shuffle=True)
 
+            # Reduce learning rate for drilling
+            orig_lr = optimizer.param_groups[0]['lr']
+            for pg in optimizer.param_groups:
+                pg['lr'] = orig_lr * drilling_lr_factor
+
             t_loss, t_ploss, t_vloss, t_nb = 0, 0, 0, 0
-            for _epoch in range(num_epochs):
+            for _epoch in range(drilling_epochs):
                 for bx, bpi, bv in t_loader:
                     optimizer.zero_grad()
                     pred_p, pred_v = model(bx)
@@ -1178,6 +1282,10 @@ def train(
                     t_ploss += policy_loss.item()
                     t_vloss += value_loss.item()
                     t_nb += 1
+
+            # Restore learning rate
+            for pg in optimizer.param_groups:
+                pg['lr'] = orig_lr
 
             t_time = time.time() - t2
             t_avg = t_loss / max(t_nb, 1)
