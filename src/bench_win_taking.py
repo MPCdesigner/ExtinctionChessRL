@@ -91,6 +91,9 @@ def run_test(models, sim_counts, num_positions, target_piece_types=None,
         for s in sim_counts:
             aggregate[label][s] = {"hits": 0, "misses": 0}
 
+    # Per-position results: list of dicts with board, side, winners, and per-model hits
+    per_position = []
+
     positions_tested = 0
     games_played = 0
     game = ExtinctionChess()
@@ -144,13 +147,46 @@ def run_test(models, sim_counts, num_positions, target_piece_types=None,
             winning_moves = [m for m, _ in winners]
             positions_tested += 1
 
+            side_str = "White" if current == Color.WHITE else "Black"
+            win_info = [
+                (str(m), pt.value if pt else '?',
+                 capture_direction(m, current), capture_distance(m))
+                for m, pt in winners
+            ]
+
             if verbose:
-                side = "White" if current == Color.WHITE else "Black"
                 win_strs = ", ".join(
-                    f"{m}({pt.value if pt else '?'},{capture_direction(m, current)[0]},d{capture_distance(m)})"
-                    for m, pt in winners
+                    f"{wm}({pv},{wd[0]},d{wdist})"
+                    for wm, pv, wd, wdist in win_info
                 )
-                print(f"\nPos {positions_tested}/{num_positions} | {side} | wins: {win_strs}")
+                print(f"\nPos {positions_tested}/{num_positions} | {side_str} | wins: {win_strs}")
+
+            # Snapshot board state as text rows (rank 8 down to rank 1)
+            piece_char = {
+                PieceType.KING: 'K', PieceType.QUEEN: 'Q', PieceType.ROOK: 'R',
+                PieceType.BISHOP: 'B', PieceType.KNIGHT: 'N', PieceType.PAWN: 'P',
+            }
+            board_rows = []
+            for rank in range(7, -1, -1):
+                row = ""
+                for file in range(8):
+                    piece = game.board.get_piece(Position(rank, file))
+                    if piece:
+                        c = piece_char[piece.piece_type]
+                        if piece.color == Color.BLACK:
+                            c = c.lower()
+                        row += c
+                    else:
+                        row += "."
+                board_rows.append(row)
+
+            pos_record = {
+                "index": positions_tested,
+                "side": side_str,
+                "board_rows": board_rows,
+                "winners": win_info,
+                "hits": {label: {} for label, _ in models},
+            }
 
             any_hit = False
             for label, evaluator in models:
@@ -176,14 +212,19 @@ def run_test(models, sim_counts, num_positions, target_piece_types=None,
                             aggregate[label][sims]["misses"] += 1
                             marker = "MISS"
 
+                        pos_record["hits"][label][sims] = is_hit
+
                         if verbose:
                             top3 = mv_sorted[:3]
                             top3_str = ", ".join(f"{m}:{v}" for m, v in top3)
                             print(f"  {label} @{sims}: {best_move} [{top3_str}] — {marker}")
                     else:
                         aggregate[label][sims]["misses"] += 1
+                        pos_record["hits"][label][sims] = False
                         if verbose:
                             print(f"  {label} @{sims}: no moves — MISS")
+
+            per_position.append(pos_record)
 
             # Start fresh game if any model found the win
             if any_hit:
@@ -199,7 +240,51 @@ def run_test(models, sim_counts, num_positions, target_piece_types=None,
             game.make_move(move)
 
     elapsed = time.time() - t0
-    return aggregate, positions_tested, games_played, elapsed
+    return aggregate, positions_tested, games_played, elapsed, per_position
+
+
+def print_tough_positions(per_position, models, sim_counts):
+    """Print positions where at least half the models completely failed
+    (missed at every sim count)."""
+    num_models = len(models)
+    threshold = (num_models + 1) // 2  # at least half (rounded up)
+
+    tough = []
+    for pos in per_position:
+        complete_failures = []
+        for label, _ in models:
+            hits = pos["hits"].get(label, {})
+            if hits and not any(hits.values()):
+                complete_failures.append(label)
+        if len(complete_failures) >= threshold:
+            tough.append((pos, complete_failures))
+
+    if not tough:
+        print(f"\n{'='*60}")
+        print(f"No positions where >= {threshold}/{num_models} models completely failed.")
+        print(f"{'='*60}")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"Tough Positions ({len(tough)} where >= {threshold}/{num_models} models completely failed)")
+    print(f"{'='*60}")
+
+    for pos, failed in tough:
+        win_strs = ", ".join(
+            f"{wm}({pv},{wd[0]},d{wdist})"
+            for wm, pv, wd, wdist in pos["winners"]
+        )
+        print(f"\n--- Pos {pos['index']} | {pos['side']} to move ---")
+        print(f"Winning moves: {win_strs}")
+        print(f"Failed completely: {', '.join(failed)}")
+        # Board printing preserved below — uncomment if you want full diagrams
+        # print()
+        # print("    a b c d e f g h")
+        # for i, row in enumerate(pos["board_rows"]):
+        #     rank = 8 - i
+        #     spaced = " ".join(row)
+        #     print(f"  {rank} {spaced} {rank}")
+        # print("    a b c d e f g h")
 
 
 def print_summary(aggregate, sim_counts, models, positions_tested, games_played, elapsed):
@@ -306,7 +391,7 @@ def main():
     print()
 
     # Run
-    aggregate, positions_tested, games_played, elapsed = run_test(
+    aggregate, positions_tested, games_played, elapsed, per_position = run_test(
         models, sim_counts, args.positions,
         target_piece_types=target_pieces,
         target_directions=target_dirs,
@@ -317,6 +402,9 @@ def main():
 
     # Print summary
     print_summary(aggregate, sim_counts, models, positions_tested, games_played, elapsed)
+
+    # Print tough positions where >= half of models completely failed
+    print_tough_positions(per_position, models, sim_counts)
 
     # Save JSON
     if args.save_json:

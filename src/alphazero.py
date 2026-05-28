@@ -623,7 +623,15 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
             _backpropagate(node, white_value)
             sims_done += 1
 
-    return [(ch.move, ch.visit_count) for ch in root.children], root_value
+    # MCTS-refined root value (from current player's perspective).
+    # root.value_sum tracks backprop totals in white's perspective.
+    if root.visit_count > 0:
+        white_q = root.value_sum / root.visit_count
+        refined_root = white_q if current == Color.WHITE else -white_q
+    else:
+        refined_root = root_value
+
+    return [(ch.move, ch.visit_count) for ch in root.children], refined_root
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -891,6 +899,66 @@ def test_vs_random(evaluator: AlphaZeroEvaluator, num_games: int = 100,
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+def generate_extra_hard_win_positions(num_positions: int, max_random_moves: int = 200):
+    """Generate positions where the current player's ONLY winning moves are
+    long-range (distance >= 5). Mirrors the win-taking test filter exactly:
+    every winning move in the position must be dist >= 5.
+
+    Policy target is uniform over ALL winning moves (which are all extra-hard).
+
+    Returns (boards, policies, values) in the same format as self-play data.
+    """
+    boards = []
+    policies = []
+    values = []
+
+    while len(boards) < num_positions:
+        game = ExtinctionChess()
+
+        for _ in range(max_random_moves):
+            if game.game_over:
+                break
+
+            legal_moves = game.get_legal_moves()
+            if not legal_moves:
+                break
+
+            current = game.current_player
+            winning_moves = []
+            for m in legal_moves:
+                gc = _copy_game(game)
+                if gc.make_move(m) and gc.game_over and gc.winner == current:
+                    winning_moves.append(m)
+
+            if winning_moves:
+                # Require ALL winning moves to be dist >= 5
+                all_extra_hard = True
+                for m in winning_moves:
+                    df = abs(m.to_pos.file - m.from_pos.file)
+                    dist = max(abs(m.to_pos.rank - m.from_pos.rank), df)
+                    if dist < 5:
+                        all_extra_hard = False
+                        break
+
+                if all_extra_hard:
+                    board = np.asarray(game.encode_board(), dtype=np.float32)
+                    policy = np.zeros(POLICY_SIZE, dtype=np.float32)
+                    for wm in winning_moves:
+                        policy[move_to_index(wm)] = 1.0
+                    policy /= policy.sum()
+                    value = 1.0 if current == Color.WHITE else -1.0
+
+                    boards.append(board)
+                    policies.append(policy)
+                    values.append(value)
+                    break
+
+            move = random.choice(legal_moves)
+            game.make_move(move)
+
+    return boards[:num_positions], policies[:num_positions], values[:num_positions]
+
+
 def generate_hard_win_positions(num_positions: int, max_random_moves: int = 200):
     """Generate positions where the current player has an instant win involving
     a 'hard' capture: backward, sideways, or long-range (distance >= 4).
@@ -1043,6 +1111,7 @@ def train(
     num_workers: int = 1,
     instant_win_positions: int = 0,
     hard_win_positions: int = 0,
+    extra_hard_win_positions: int = 0,
     max_wall_time: float = 0,
     num_epochs: int = 5,
     drilling_epochs: int = 5,
@@ -1248,6 +1317,19 @@ def train(
             hw_time = time.time() - t_hw
             print(f"         +{len(hw_boards)} hard-capture positions "
                   f"({len(terminal_boards)} total drilling) | {hw_time:.1f}s")
+
+        # Add synthetic extra-hard positions (all winning moves dist >= 5)
+        if extra_hard_win_positions > 0:
+            t_eh = time.time()
+            eh_boards, eh_policies, eh_values = generate_extra_hard_win_positions(
+                extra_hard_win_positions
+            )
+            terminal_boards.extend(eh_boards)
+            terminal_policies.extend(eh_policies)
+            terminal_values.extend(eh_values)
+            eh_time = time.time() - t_eh
+            print(f"         +{len(eh_boards)} extra-hard positions "
+                  f"({len(terminal_boards)} total drilling) | {eh_time:.1f}s")
 
         if terminal_boards:
             t2 = time.time()

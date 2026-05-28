@@ -42,7 +42,23 @@ Job       Iters      Node           Start               End                 Dura
 506822    348-355    delta-slurm1   May 12 ~00:00       May 12 ~21:00       ~21h      COMPLETED   Phase 12: reduced drilling (5 epochs, 0.5x LR, 300 hard-captures)
 507589    356-363    delta-slurm1   May 12 ~21:00       May 13 ~06:00       ~9h       COMPLETED   Auto-resubmit from 506822
 508975    364-371    delta-slurm1   May 13 ~06:00       May 14 ~05:00       ~23h      COMPLETED   Auto-resubmit from 507589
-509411    372-       delta-slurm1   May 14 ~05:00       (running)           —         RUNNING     Auto-resubmit from 508975
+509411    372-378    delta-slurm1   May 14 ~05:00       May 15 ~04:00       ~23h      COMPLETED   Auto-resubmit from 508975
+510606    379-385    delta-slurm1   May 15 ~04:00       May 16 ~03:00       ~23h      COMPLETED   Auto-resubmit from 509411
+511418    386-392    delta-slurm1   May 16 ~03:00       May 17 ~02:00       ~23h      COMPLETED   Auto-resubmit from 510606
+511463    393-399    delta-slurm1   May 17 ~02:00       May 18 ~02:00       ~24h      COMPLETED   Auto-resubmit from 511418
+511807    400-407    delta-slurm1   May 18 ~02:00       May 19 ~01:00       ~23h      COMPLETED   Auto-resubmit from 511463
+512084    408-414    delta-slurm1   May 19 ~01:00       May 19 ~22:00       ~21h      COMPLETED   Auto-resubmit from 511807
+512372    415-421    delta-slurm1   May 19 ~22:00       May 20 ~18:00       ~20h      COMPLETED   Auto-resubmit from 512084
+513134    422-428    delta-slurm1   May 20 ~18:00       May 21 ~16:00       ~22h      COMPLETED   Auto-resubmit from 512372
+514345    429-435    delta-slurm1   May 21 ~16:00       May 22 ~14:00       ~22h      COMPLETED   Auto-resubmit from 513134
+514692    436-442    delta-slurm1   May 22 ~14:00       May 23 ~14:00       ~24h      COMPLETED   Auto-resubmit from 514345
+515331    443-449    delta-slurm1   May 23 ~14:00       May 24 ~12:00       ~22h      COMPLETED   Auto-resubmit from 514692
+515477    450-456    delta-slurm1   May 24 ~12:00       May 25 ~09:00       ~21h      COMPLETED   Auto-resubmit from 515331
+515735    457-463    delta-slurm1   May 25 ~09:00       May 26 ~07:00       ~22h      COMPLETED   Auto-resubmit from 515477
+515993    464-470    delta-slurm1   May 26 ~07:00       May 27 ~03:00       ~20h      COMPLETED   Auto-resubmit from 515735
+516253    471-477    delta-slurm1   May 27 ~03:00       May 28 ~00:00       ~21h      COMPLETED   Auto-resubmit from 515993
+516638    478-484    delta-slurm1   May 28 ~00:00       May 28 ~22:00       ~22h      COMPLETED   Auto-resubmit from 516253
+517297    485-       delta-slurm1   May 28 ~22:00       (running)           —         RUNNING     Auto-resubmit from 516638
 
 
 Log Access
@@ -82,4 +98,21 @@ tail -10 ~/train_506210.log                         # 506210   iters 341-347
 tail -10 ~/train_506822.log                         # 506822   iters 348-355 (Phase 12)
 tail -10 ~/train_507589.log                         # 507589   iters 356-363
 tail -10 ~/train_508975.log                         # 508975   iters 364-371
-tail -10 ~/train_509411.log                         # 509411   iters 372+
+tail -10 ~/train_509411.log                         # 509411   iters 372-378
+tail -10 ~/train_510606.log                         # 510606   iters 379-385
+tail -10 ~/train_511418.log                         # 511418   iters 386-392
+tail -10 ~/train_511463.log                         # 511463   iters 393-399
+tail -10 ~/train_511807.log                         # 511807   iters 400-407
+tail -10 ~/train_512084.log                         # 512084   iters 408-414
+tail -10 ~/train_512372.log                         # 512372   iters 415-421
+tail -10 ~/train_513134.log                         # 513134   iters 422-428
+tail -10 ~/train_514345.log                         # 514345   iters 429-435
+tail -10 ~/train_514692.log                         # 514692   iters 436-442
+tail -10 ~/train_515331.log                         # 515331   iters 443-449
+tail -10 ~/train_515477.log                         # 515477   iters 450-456
+tail -10 ~/train_515735.log                         # 515735   iters 457-463
+tail -10 ~/train_515993.log                         # 515993   iters 464-470
+tail -10 ~/train_516253.log                         # 516253   iters 471-477
+tail -10 ~/train_516638.log                         # 516638   iters 478-484
+tail -10 ~/train_517297.log                         # 517297   iters 485+
+ 
