@@ -18,4 +18,6 @@ if __name__ == "__main__":
         num_epochs=10,
         drilling_epochs=5,
         drilling_lr_factor=0.5,
+        extra_hard_epochs=5,
+        extra_hard_lr_factor=0.025,
     )

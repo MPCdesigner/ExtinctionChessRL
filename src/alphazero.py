@@ -1116,6 +1116,8 @@ def train(
     num_epochs: int = 5,
     drilling_epochs: int = 5,
     drilling_lr_factor: float = 0.5,
+    extra_hard_epochs: int = 5,
+    extra_hard_lr_factor: float = 0.1,
 ):
     job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1318,18 +1320,16 @@ def train(
             print(f"         +{len(hw_boards)} hard-capture positions "
                   f"({len(terminal_boards)} total drilling) | {hw_time:.1f}s")
 
-        # Add synthetic extra-hard positions (all winning moves dist >= 5)
+        # Generate extra-hard positions separately (not added to main drilling pool)
+        eh_boards, eh_policies, eh_values = [], [], []
         if extra_hard_win_positions > 0:
             t_eh = time.time()
             eh_boards, eh_policies, eh_values = generate_extra_hard_win_positions(
                 extra_hard_win_positions
             )
-            terminal_boards.extend(eh_boards)
-            terminal_policies.extend(eh_policies)
-            terminal_values.extend(eh_values)
             eh_time = time.time() - t_eh
             print(f"         +{len(eh_boards)} extra-hard positions "
-                  f"({len(terminal_boards)} total drilling) | {eh_time:.1f}s")
+                  f"(separate phase, {extra_hard_lr_factor}x LR) | {eh_time:.1f}s")
 
         if terminal_boards:
             t2 = time.time()
@@ -1376,6 +1376,51 @@ def train(
             print(f"         terminal drilling: {len(terminal_boards)} positions, "
                   f"loss={t_avg:.4f} (p={t_avgp:.4f} v={t_avgv:.4f}) "
                   f"| {t_time:.1f}s")
+
+        # ── Extra-hard drilling (separate phase, gentler LR) ────────────────
+        if eh_boards:
+            t3 = time.time()
+            ehX = torch.tensor(np.array(eh_boards),
+                               dtype=torch.float32, device=device)
+            ehpi = torch.tensor(np.array(eh_policies),
+                                dtype=torch.float32, device=device)
+            ehv = torch.tensor(np.array(eh_values),
+                               dtype=torch.float32, device=device)
+
+            eh_dataset = torch.utils.data.TensorDataset(ehX, ehpi, ehv)
+            eh_loader = torch.utils.data.DataLoader(
+                eh_dataset, batch_size=batch_size, shuffle=True)
+
+            orig_lr = optimizer.param_groups[0]['lr']
+            for pg in optimizer.param_groups:
+                pg['lr'] = orig_lr * extra_hard_lr_factor
+
+            eh_loss, eh_ploss, eh_vloss, eh_nb = 0, 0, 0, 0
+            for _epoch in range(extra_hard_epochs):
+                for bx, bpi, bv in eh_loader:
+                    optimizer.zero_grad()
+                    pred_p, pred_v = model(bx)
+                    log_probs = F.log_softmax(pred_p, dim=1)
+                    policy_loss = -torch.sum(bpi * log_probs, dim=1).mean()
+                    value_loss = F.mse_loss(pred_v, bv)
+                    loss = policy_loss + value_loss
+                    loss.backward()
+                    optimizer.step()
+                    eh_loss += loss.item()
+                    eh_ploss += policy_loss.item()
+                    eh_vloss += value_loss.item()
+                    eh_nb += 1
+
+            for pg in optimizer.param_groups:
+                pg['lr'] = orig_lr
+
+            eh_time = time.time() - t3
+            eh_avg = eh_loss / max(eh_nb, 1)
+            eh_avgp = eh_ploss / max(eh_nb, 1)
+            eh_avgv = eh_vloss / max(eh_nb, 1)
+            print(f"         extra-hard drilling: {len(eh_boards)} positions, "
+                  f"loss={eh_avg:.4f} (p={eh_avgp:.4f} v={eh_avgv:.4f}) "
+                  f"| {eh_time:.1f}s")
 
         # Save checkpoint
         model.save_checkpoint(checkpoint_path, iteration=iter_num)

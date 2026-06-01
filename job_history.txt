@@ -58,7 +58,12 @@ Job       Iters      Node           Start               End                 Dura
 515993    464-470    delta-slurm1   May 26 ~07:00       May 27 ~03:00       ~20h      COMPLETED   Auto-resubmit from 515735
 516253    471-477    delta-slurm1   May 27 ~03:00       May 28 ~00:00       ~21h      COMPLETED   Auto-resubmit from 515993
 516638    478-484    delta-slurm1   May 28 ~00:00       May 28 ~22:00       ~22h      COMPLETED   Auto-resubmit from 516253
-517297    485-       delta-slurm1   May 28 ~22:00       (running)           —         RUNNING     Auto-resubmit from 516638
+517297    485-492    delta-slurm1   May 28 ~22:00       May 29 ~21:00       ~23h      COMPLETED   Phase 13 deployed (extra-hard drilling); auto-resubmit from 516638
+517534    493-500    delta-slurm1   May 29 ~21:00       May 30 ~19:00       ~22h      COMPLETED   iter 500 milestone; auto-resubmit from 517297
+517594    501-508    delta-slurm1   May 30 ~19:00       May 31 ~16:00       ~21h      COMPLETED   Last job under full-LR extra-hard drilling
+521863    509-516    delta-slurm1   May 31 ~16:00       Jun 01 ~14:00       ~22h      COMPLETED   Still on OLD full-LR extra-hard drilling (upload didn't deploy in time); auto-resubmit from 517594
+522257    517-523    delta-slurm1   Jun 01 ~14:00       Jun 02 ~12:00       ~22h      COMPLETED   Phase 13b deployed: extra-hard at 0.1x LR; auto-resubmit from 521863
+522339    524-       delta-slurm1   Jun 02 ~12:00       (running)           —         RUNNING     Auto-resubmit from 522257
 
 
 Log Access
@@ -114,5 +119,10 @@ tail -10 ~/train_515735.log                         # 515735   iters 457-463
 tail -10 ~/train_515993.log                         # 515993   iters 464-470
 tail -10 ~/train_516253.log                         # 516253   iters 471-477
 tail -10 ~/train_516638.log                         # 516638   iters 478-484
-tail -10 ~/train_517297.log                         # 517297   iters 485+
+tail -10 ~/train_517297.log                         # 517297   iters 485-492 (Phase 13)
+tail -10 ~/train_517534.log                         # 517534   iters 493-500
+tail -10 ~/train_517594.log                         # 517594   iters 501-508
+tail -10 ~/train_521863.log                         # 521863   iters 509-516 (still old full-LR)
+tail -10 ~/train_522257.log                         # 522257   iters 517-523 (Phase 13b)
+tail -10 ~/train_522339.log                         # 522339   iters 524+
  
