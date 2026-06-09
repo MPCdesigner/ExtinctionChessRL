@@ -63,7 +63,15 @@ Job       Iters      Node           Start               End                 Dura
 517594    501-508    delta-slurm1   May 30 ~19:00       May 31 ~16:00       ~21h      COMPLETED   Last job under full-LR extra-hard drilling
 521863    509-516    delta-slurm1   May 31 ~16:00       Jun 01 ~14:00       ~22h      COMPLETED   Still on OLD full-LR extra-hard drilling (upload didn't deploy in time); auto-resubmit from 517594
 522257    517-523    delta-slurm1   Jun 01 ~14:00       Jun 02 ~12:00       ~22h      COMPLETED   Phase 13b deployed: extra-hard at 0.1x LR; auto-resubmit from 521863
-522339    524-       delta-slurm1   Jun 02 ~12:00       (running)           —         RUNNING     Auto-resubmit from 522257
+522339    524-530    delta-slurm1   Jun 02 ~12:00       Jun 03 ~09:00       ~21h      COMPLETED   Last job at 0.1x extra-hard LR; auto-resubmit from 522257
+522403    531-537    delta-slurm1   Jun 03 ~09:00       Jun 04 ~05:00       ~20h      COMPLETED   Phase 13c: 0.025x extra-hard LR confirmed deployed; replay buffer code NOT deployed
+523033    538-544    delta-slurm1   Jun 04 ~05:00       Jun 05 ~02:00       ~21h      COMPLETED   Replay buffer code still NOT deployed; auto-resubmit from 522403
+523305    545-552    delta-slurm1   Jun 05 ~02:00       Jun 06 ~00:00       ~22h      COMPLETED   Replay buffer write-only (K=10) deployed; auto-resubmit from 523033
+523643    553-559    delta-slurm1   Jun 06 ~00:00       Jun 06 ~21:00       ~21h      COMPLETED   Phase 14 deployed: extra-hard off, K=5 buffer load, 3 epochs
+524455    560-566    delta-slurm1   Jun 06 ~21:00       Jun 07 ~18:00       ~21h      COMPLETED   Phase 14 continued; auto-resubmit from 523643
+525497    567-573    delta-slurm1   Jun 07 ~18:00       Jun 08 ~17:00       ~23h      COMPLETED   Phase 14 continued; auto-resubmit from 524455
+527075    574-580    delta-slurm1   Jun 08 ~17:00       Jun 09 ~14:00       ~21h      COMPLETED   Phase 14 continued; auto-resubmit from 525497
+527736    581-       delta-slurm1   Jun 09 ~14:00       (running)           —         RUNNING     Auto-resubmit from 527075
 
 
 Log Access
@@ -124,5 +132,13 @@ tail -10 ~/train_517534.log                         # 517534   iters 493-500
 tail -10 ~/train_517594.log                         # 517594   iters 501-508
 tail -10 ~/train_521863.log                         # 521863   iters 509-516 (still old full-LR)
 tail -10 ~/train_522257.log                         # 522257   iters 517-523 (Phase 13b)
-tail -10 ~/train_522339.log                         # 522339   iters 524+
+tail -10 ~/train_522339.log                         # 522339   iters 524-530
+tail -10 ~/train_522403.log                         # 522403   iters 531-537 (Phase 13c: 0.025x LR)
+tail -10 ~/train_523033.log                         # 523033   iters 538-544
+tail -10 ~/train_523305.log                         # 523305   iters 545-552
+tail -10 ~/train_523643.log                         # 523643   iters 553-559 (Phase 14)
+tail -10 ~/train_524455.log                         # 524455   iters 560-566
+tail -10 ~/train_525497.log                         # 525497   iters 567-573
+tail -10 ~/train_527075.log                         # 527075   iters 574-580
+tail -10 ~/train_527736.log                         # 527736   iters 581+
  
