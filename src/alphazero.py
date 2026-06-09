@@ -1118,6 +1118,8 @@ def train(
     drilling_lr_factor: float = 0.5,
     extra_hard_epochs: int = 5,
     extra_hard_lr_factor: float = 0.1,
+    replay_buffer_dir: str = None,
+    replay_buffer_size: int = 1,
 ):
     job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1253,6 +1255,51 @@ def train(
         print(f"[iter {iter_num}] W={wins_w} B={wins_b} D={draws} "
               f"| {len(all_boards)} positions | gen={gen_time:.1f}s "
               f"(total={eh}:{em:02d}:{es:02d})")
+
+        # ── Persist this iter's games to replay buffer dir ──
+        if replay_buffer_dir is not None and all_boards:
+            t_rb = time.time()
+            os.makedirs(replay_buffer_dir, exist_ok=True)
+            iter_path = os.path.join(replay_buffer_dir, f"iter_{iter_num}.npz")
+            np.savez_compressed(
+                iter_path,
+                boards=np.array(all_boards, dtype=np.uint8),
+                policies=np.array(all_policies, dtype=np.float32),
+                values=np.array(all_values, dtype=np.float32),
+            )
+            # Cleanup files older than replay_buffer_size iterations
+            cutoff = iter_num - replay_buffer_size + 1
+            for fname in os.listdir(replay_buffer_dir):
+                if fname.startswith("iter_") and fname.endswith(".npz"):
+                    try:
+                        file_iter = int(fname[5:-4])
+                        if file_iter < cutoff:
+                            os.remove(os.path.join(replay_buffer_dir, fname))
+                    except ValueError:
+                        pass
+            rb_time = time.time() - t_rb
+            print(f"         replay buffer: wrote iter_{iter_num}.npz "
+                  f"(K={replay_buffer_size}) | {rb_time:.1f}s")
+
+            # Phase 2: load buffer contents for training (replaces current iter's data)
+            if replay_buffer_size > 1:
+                t_rb_load = time.time()
+                files = sorted([
+                    f for f in os.listdir(replay_buffer_dir)
+                    if f.startswith("iter_") and f.endswith(".npz")
+                ])
+                buf_boards, buf_policies, buf_values = [], [], []
+                for fname in files:
+                    data = np.load(os.path.join(replay_buffer_dir, fname))
+                    buf_boards.append(data["boards"].astype(np.float32))
+                    buf_policies.append(data["policies"])
+                    buf_values.append(data["values"])
+                all_boards = np.concatenate(buf_boards)
+                all_policies = np.concatenate(buf_policies)
+                all_values = np.concatenate(buf_values)
+                rb_load_time = time.time() - t_rb_load
+                print(f"         replay buffer: loaded {len(files)} iters, "
+                      f"{len(all_boards)} positions total | {rb_load_time:.1f}s")
 
         # ── Supplementary instant-win positions (iters 270-280) ────────────
         if instant_win_positions > 0 and 270 <= iter_num <= 280:
