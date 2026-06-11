@@ -71,7 +71,10 @@ Job       Iters      Node           Start               End                 Dura
 524455    560-566    delta-slurm1   Jun 06 ~21:00       Jun 07 ~18:00       ~21h      COMPLETED   Phase 14 continued; auto-resubmit from 523643
 525497    567-573    delta-slurm1   Jun 07 ~18:00       Jun 08 ~17:00       ~23h      COMPLETED   Phase 14 continued; auto-resubmit from 524455
 527075    574-580    delta-slurm1   Jun 08 ~17:00       Jun 09 ~14:00       ~21h      COMPLETED   Phase 14 continued; auto-resubmit from 525497
-527736    581-       delta-slurm1   Jun 09 ~14:00       (running)           —         RUNNING     Auto-resubmit from 527075
+527736    581-587    delta-slurm1   Jun 09 ~14:00       Jun 10 ~11:00       ~21h      COMPLETED   Phase 14 continued; auto-resubmit from 527075
+528828    588-595    delta-slurm1   Jun 10 ~11:00       Jun 11 ~10:00       ~23h      COMPLETED   Phase 14 continued; auto-resubmit from 527736
+530017    596-602    delta-slurm1   Jun 11 ~10:00       Jun 12 ~07:00       ~21h      COMPLETED   Phase 14 continued; iter 600 milestone; auto-resubmit from 528828
+530267    603-       delta-slurm1   Jun 12 ~07:00       (running)           —         RUNNING     Auto-resubmit from 530017
 
 
 Log Access
@@ -140,5 +143,8 @@ tail -10 ~/train_523643.log                         # 523643   iters 553-559 (Ph
 tail -10 ~/train_524455.log                         # 524455   iters 560-566
 tail -10 ~/train_525497.log                         # 525497   iters 567-573
 tail -10 ~/train_527075.log                         # 527075   iters 574-580
-tail -10 ~/train_527736.log                         # 527736   iters 581+
+tail -10 ~/train_527736.log                         # 527736   iters 581-587
+tail -10 ~/train_528828.log                         # 528828   iters 588-595
+tail -10 ~/train_530017.log                         # 530017   iters 596-602
+tail -10 ~/train_530267.log                         # 530267   iters 603+
  
