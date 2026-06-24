@@ -7,7 +7,7 @@ if __name__ == "__main__":
         iterations=100,
         games_per_iteration=400,
         num_simulations=800,
-        learning_rate=0.0001,
+        learning_rate=0.00002,
         models_dir="../models",
         resume=True,
         num_workers=4,

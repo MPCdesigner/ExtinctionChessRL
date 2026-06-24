@@ -1187,7 +1187,7 @@ def train(
                 temp_threshold=30,
                 num_parallel=min(50, games_per_iteration),
                 max_batch=512,
-                num_threads=4,
+                num_threads=8,
             )
             for boards, policies, players, outcome in game_results:
                 for b, pi, player in zip(boards, policies, players):
