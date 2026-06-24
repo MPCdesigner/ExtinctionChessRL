@@ -15,6 +15,7 @@ import random
 import time
 import os
 import json
+import subprocess
 from typing import List, Tuple, Optional
 from multiprocessing import Process, Queue
 
@@ -46,6 +47,167 @@ def atomic_torch_save(obj, path):
     tmp_path = path + ".tmp"
     torch.save(obj, tmp_path)
     os.replace(tmp_path, path)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SLURM helper-job management
+#
+# Per iter, main can launch N helper sbatch jobs that each generate a batch
+# of self-play games against az_latest.pt and write a .npz file. Main reads
+# those files at training time and concatenates them with its own self-play
+# data — a "recency injection" that does not enter the K-buffer.
+#
+# Helpers are tried on a primary GPU type (typically 2080 Ti on
+# delta-slurm1, which has low queue contention) and fall back to a
+# secondary GPU type (typically 3090 on trpro-slurm1) if the primary is
+# pending. If neither slot frees within max_wait_seconds, the helper is
+# skipped for that iter — main proceeds with degraded data (current
+# pipeline behavior).
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _slurm_job_state(job_id):
+    """Returns the SLURM state of a job (RUNNING/PENDING/COMPLETED/...) or None."""
+    try:
+        result = subprocess.run(
+            ["squeue", "-j", str(job_id), "-h", "-o", "%T"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _wait_until_running(job_id, max_seconds):
+    """Poll squeue until job is RUNNING or a terminal state. Returns True if RUNNING."""
+    deadline = time.time() + max_seconds
+    while time.time() < deadline:
+        state = _slurm_job_state(job_id)
+        if state == "RUNNING":
+            return True
+        if state in (None, "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"):
+            return False
+        time.sleep(2)
+    return False
+
+
+def _sbatch_helper(helper_script_path, output_path, gres, nodelist):
+    """Submit one helper job. Returns SLURM job ID or None on submission failure."""
+    cmd = [
+        "sbatch", "--parsable",
+        f"--gres={gres}",
+        f"--nodelist={nodelist}",
+        helper_script_path,
+        output_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            print(f"         [helper] sbatch failed ({gres} on {nodelist}): "
+                  f"{result.stderr.strip()}")
+            return None
+        return int(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
+        print(f"         [helper] sbatch error: {e}")
+        return None
+
+
+def _cancel_job(job_id):
+    if job_id is None:
+        return
+    try:
+        subprocess.run(["scancel", str(job_id)], check=False,
+                       capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+
+def launch_helper_with_fallback(iter_num, helper_id, helper_script_path, helper_dir,
+                                max_wait_seconds=25,
+                                primary_gres="gpu:rtx_2080_ti:1",
+                                primary_node="delta-slurm1",
+                                fallback_gres="gpu:rtx_3090:1",
+                                fallback_node="trpro-slurm1"):
+    """Launch one helper job with a primary→fallback GPU strategy.
+
+    Returns (job_id, output_path). If neither primary nor fallback could
+    allocate within max_wait_seconds, returns (None, None) and main will
+    proceed without this helper's data.
+    """
+    output_path = os.path.join(helper_dir, f"helper_v{iter_num}_id{helper_id}.npz")
+
+    # Primary attempt
+    job_id = _sbatch_helper(helper_script_path, output_path, primary_gres, primary_node)
+    if job_id is not None and _wait_until_running(job_id, max_wait_seconds):
+        print(f"         [helper {helper_id}] running on {primary_node} (job {job_id})")
+        return job_id, output_path
+
+    # Primary pending or failed — cancel and try fallback
+    _cancel_job(job_id)
+    time.sleep(2)
+
+    job_id = _sbatch_helper(helper_script_path, output_path, fallback_gres, fallback_node)
+    if job_id is not None and _wait_until_running(job_id, max_wait_seconds):
+        print(f"         [helper {helper_id}] running on {fallback_node} (job {job_id})")
+        return job_id, output_path
+
+    # Both attempts failed — give up for this iter
+    _cancel_job(job_id)
+    print(f"         [helper {helper_id}] could not allocate a GPU, skipping")
+    return None, None
+
+
+def consume_helper_files(helper_specs):
+    """Read all delivered helper .npz files and return concatenated arrays.
+
+    helper_specs: list of (job_id, output_path) tuples (from
+    launch_helper_with_fallback). Tuples with output_path=None are skipped.
+    Files are deleted after successful consumption.
+
+    Returns (boards, policies, values, total_games). All four are None/0 if
+    nothing was consumed.
+    """
+    all_b, all_p, all_v = [], [], []
+    total_games = 0
+    for job_id, output_path in helper_specs:
+        if output_path is None:
+            continue
+        if not os.path.exists(output_path):
+            print(f"         [helper] missing file: {os.path.basename(output_path)} "
+                  f"(job {job_id}) — proceeding without")
+            continue
+        try:
+            data = np.load(output_path)
+            all_b.append(data["boards"].astype(np.float32))
+            all_p.append(data["policies"])
+            all_v.append(data["values"])
+            n_games = int(data["num_games"]) if "num_games" in data.files else 0
+            total_games += n_games
+            print(f"         [helper] consumed {os.path.basename(output_path)} "
+                  f"({n_games} games, {len(data['boards'])} positions)")
+            os.remove(output_path)
+        except Exception as e:
+            print(f"         [helper] failed to load {output_path}: {e}")
+    if not all_b:
+        return None, None, None, 0
+    return (np.concatenate(all_b), np.concatenate(all_p),
+            np.concatenate(all_v), total_games)
+
+
+def cleanup_stale_helper_files(current_iter_num, helper_dir):
+    """Remove leftover helper_v*_id*.npz files from older iters."""
+    if not os.path.isdir(helper_dir):
+        return
+    for fname in os.listdir(helper_dir):
+        if not (fname.startswith("helper_v") and fname.endswith(".npz")):
+            continue
+        try:
+            # parse "helper_v{N}_id{M}.npz"
+            v_part = fname.split("_v")[1].split("_")[0]
+            version = int(v_part)
+            if version < current_iter_num:
+                os.remove(os.path.join(helper_dir, fname))
+        except (IndexError, ValueError):
+            pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1141,6 +1303,15 @@ def train(
     extra_hard_lr_factor: float = 0.1,
     replay_buffer_dir: str = None,
     replay_buffer_size: int = 1,
+    # ── Decoupled helper jobs (recency injection; not stored in K-buffer) ──
+    helpers_enabled: bool = False,
+    helpers_per_iter: int = 2,
+    helper_script_path: str = None,
+    helper_max_wait_seconds: int = 25,
+    helper_primary_gres: str = "gpu:rtx_2080_ti:1",
+    helper_primary_node: str = "delta-slurm1",
+    helper_fallback_gres: str = "gpu:rtx_3090:1",
+    helper_fallback_node: str = "trpro-slurm1",
 ):
     job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1187,6 +1358,23 @@ def train(
                       f"need ~{needed:.0f}s (avg {avg_gen_time:.0f}s + 1000s buffer), "
                       f"stopping before iter {iter_num}")
                 break
+
+        # ── Launch decoupled helper jobs (if enabled) ───────────────────────
+        helper_specs = []
+        if helpers_enabled and helper_script_path and replay_buffer_dir:
+            cleanup_stale_helper_files(iter_num, replay_buffer_dir)
+            print(f"         [helper] launching {helpers_per_iter} helper job(s) "
+                  f"for iter {iter_num}")
+            for hid in range(helpers_per_iter):
+                helper_specs.append(launch_helper_with_fallback(
+                    iter_num, hid, helper_script_path, replay_buffer_dir,
+                    max_wait_seconds=helper_max_wait_seconds,
+                    primary_gres=helper_primary_gres,
+                    primary_node=helper_primary_node,
+                    fallback_gres=helper_fallback_gres,
+                    fallback_node=helper_fallback_node,
+                ))
+        helper_games_consumed = 0  # populated after self-play, used in training_log
 
         model.eval()
 
@@ -1321,6 +1509,19 @@ def train(
                 rb_load_time = time.time() - t_rb_load
                 print(f"         replay buffer: loaded {len(files)} iters, "
                       f"{len(all_boards)} positions total | {rb_load_time:.1f}s")
+
+        # ── Consume helper games (recency injection, NOT in K-buffer) ───────
+        if helpers_enabled and helper_specs:
+            h_b, h_p, h_v, hgc = consume_helper_files(helper_specs)
+            if h_b is not None:
+                all_boards = np.concatenate([all_boards, h_b])
+                all_policies = np.concatenate([all_policies, h_p])
+                all_values = np.concatenate([all_values, h_v])
+                helper_games_consumed = hgc
+                print(f"         [helper] +{hgc} games merged, "
+                      f"{len(all_boards)} positions total for training")
+            else:
+                print(f"         [helper] no helper data this iter")
 
         # ── Supplementary instant-win positions (iters 270-280) ────────────
         if instant_win_positions > 0 and 270 <= iter_num <= 280:
@@ -1503,6 +1704,7 @@ def train(
             "draws": draws,
             "gen_time": gen_time,
             "train_time": train_time,
+            "helper_games": helper_games_consumed,
         })
 
         # ── Evaluate every 10 iterations ────────────────────────────────────
