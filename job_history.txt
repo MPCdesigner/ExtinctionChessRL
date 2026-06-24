@@ -74,7 +74,17 @@ Job       Iters      Node           Start               End                 Dura
 527736    581-587    delta-slurm1   Jun 09 ~14:00       Jun 10 ~11:00       ~21h      COMPLETED   Phase 14 continued; auto-resubmit from 527075
 528828    588-595    delta-slurm1   Jun 10 ~11:00       Jun 11 ~10:00       ~23h      COMPLETED   Phase 14 continued; auto-resubmit from 527736
 530017    596-602    delta-slurm1   Jun 11 ~10:00       Jun 12 ~07:00       ~21h      COMPLETED   Phase 14 continued; iter 600 milestone; auto-resubmit from 528828
-530267    603-       delta-slurm1   Jun 12 ~07:00       (running)           —         RUNNING     Auto-resubmit from 530017
+530267    603-608    delta-slurm1   Jun 11 ~05:00       Jun 12 ~01:12       ~20h      KILLED      WATcloud power outage interrupted iter 609 mid-generation; checkpoint at iter 608 intact; resubmit chain broken
+531570    609-616    trpro-slurm1   Jun 16 ~04:00       Jun 17 ~01:00       ~21h      COMPLETED   Manual restart after outage; switched to RTX 3090; gen ~9415s avg (only ~8% faster than 2080 Ti) — CPU-bound on trpro-slurm1
+531779    617-625    trpro-slurm1   Jun 17 ~01:00       Jun 18 ~00:00       ~23h      COMPLETED   Last 4-thread job; gen ~9118s avg; auto-resubmit from 531570
+532392    626-634    trpro-slurm1   Jun 18 ~00:00       Jun 19 ~00:00       ~21h      COMPLETED   First 8-thread test; gen ~8331s avg (only ~9% faster than 4-thread); hitting GPU floor
+532529    635-643    trpro-slurm1   Jun 19 ~00:00       Jun 19 ~21:00       ~21h      COMPLETED   Last LR=0.0001 job; gen ~8311s avg; auto-resubmit from 532392
+532893    644-652    trpro-slurm1   Jun 19 ~21:00       Jun 20 ~18:00       ~21h      COMPLETED   First LR=0.00002 job; drilling/value losses climbed (~0.66 / ~0.21); iter 652 hit 99% (first sub-100% in many iters)
+533239    653-661    trpro-slurm1   Jun 20 ~18:00       Jun 21 ~15:00       ~21h      COMPLETED   LR=0.00002 continues; drilling losses ~0.62 (slight improvement); iter 660 hit 100%, iter 661 dropped to 99%
+533321    662-670    trpro-slurm1   Jun 21 ~15:00       Jun 22 ~12:44       ~22h      COMPLETED   LR=0.00002 continues; value loss declined 0.22→0.20; iter 670 hit 100%
+533460    671-679    trpro-slurm1   Jun 22 ~12:44       Jun 23 ~10:30       ~22h      COMPLETED   LR=0.00002 continues; drilling losses ~0.62 (plateau); value loss 0.19-0.20
+533805    680-688    trpro-slurm1   Jun 23 ~10:30       Jun 24 ~08:00       ~22h      COMPLETED   iter 680 hit new best; B winning more than W in 6 of 9 iters (style skew emerging)
+533883    689-       trpro-slurm1   Jun 24 ~08:00       (running)           —         RUNNING     Auto-resubmit from 533805
 
 
 Log Access
@@ -146,5 +156,15 @@ tail -10 ~/train_527075.log                         # 527075   iters 574-580
 tail -10 ~/train_527736.log                         # 527736   iters 581-587
 tail -10 ~/train_528828.log                         # 528828   iters 588-595
 tail -10 ~/train_530017.log                         # 530017   iters 596-602
-tail -10 ~/train_530267.log                         # 530267   iters 603+
+tail -10 ~/train_530267.log                         # 530267   iters 603-608 (KILLED by power outage)
+tail -10 ~/train_531570.log                         # 531570   iters 609-616 (3090 restart)
+tail -10 ~/train_531779.log                         # 531779   iters 617-625 (last 4-thread)
+tail -10 ~/train_532392.log                         # 532392   iters 626-634 (first 8-thread test)
+tail -10 ~/train_532529.log                         # 532529   iters 635-643 (last LR=0.0001)
+tail -10 ~/train_532893.log                         # 532893   iters 644-652 (first LR=0.00002)
+tail -10 ~/train_533239.log                         # 533239   iters 653-661 (LR=0.00002 continues)
+tail -10 ~/train_533321.log                         # 533321   iters 662-670
+tail -10 ~/train_533460.log                         # 533460   iters 671-679
+tail -10 ~/train_533805.log                         # 533805   iters 680-688
+tail -10 ~/train_533883.log                         # 533883   iters 689+
  
