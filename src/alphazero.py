@@ -28,6 +28,27 @@ from state_encoder import StateEncoder
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Atomic file writes
+#
+# Both the model checkpoint and replay-buffer .npz files are read by other
+# processes (auto-resubmitted training jobs, helper jobs). Write to a .tmp
+# path first and rename: os.replace is atomic on POSIX, so readers either
+# see the full previous file or the full new one — never a half-written one.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def atomic_savez_compressed(path, **arrays):
+    tmp_path = path + ".tmp"
+    np.savez_compressed(tmp_path, **arrays)
+    os.replace(tmp_path, path)
+
+
+def atomic_torch_save(obj, path):
+    tmp_path = path + ".tmp"
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Move encoding  (Move ↔ policy index)
 #
 # 76 planes × 64 squares = 4864 total policy logits
@@ -241,7 +262,7 @@ class AlphaZeroNet(nn.Module):
         metadata["num_filters"] = self.num_filters
         metadata["num_blocks"] = self.num_blocks
         metadata["policy_size"] = self.policy_size
-        torch.save({"state_dict": self.state_dict(), "metadata": metadata}, path)
+        atomic_torch_save({"state_dict": self.state_dict(), "metadata": metadata}, path)
 
     @classmethod
     def load_checkpoint(cls, path, migrate: bool = False) -> Tuple["AlphaZeroNet", dict]:
@@ -1261,7 +1282,7 @@ def train(
             t_rb = time.time()
             os.makedirs(replay_buffer_dir, exist_ok=True)
             iter_path = os.path.join(replay_buffer_dir, f"iter_{iter_num}.npz")
-            np.savez_compressed(
+            atomic_savez_compressed(
                 iter_path,
                 boards=np.array(all_boards, dtype=np.uint8),
                 policies=np.array(all_policies, dtype=np.float32),
