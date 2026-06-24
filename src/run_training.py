@@ -1,4 +1,5 @@
 import multiprocessing
+import os
 from alphazero import train
 
 if __name__ == "__main__":
@@ -22,4 +23,17 @@ if __name__ == "__main__":
         extra_hard_lr_factor=0.025,
         replay_buffer_dir="../replay_buffer",
         replay_buffer_size=5,  # rolling window of last 5 iterations
+        # ── Decoupled helper jobs (recency injection) ──
+        # Each iter, main sbatches helpers_per_iter helpers that each generate
+        # 200 games against az_latest.pt. Main consumes the resulting .npz files
+        # at training time and concatenates them with its own self-play data.
+        # Helper data is NOT stored in the K-buffer.
+        helpers_enabled=True,
+        helpers_per_iter=2,
+        helper_script_path=os.path.expanduser("~/extinction-chess/helper.sh"),
+        helper_max_wait_seconds=25,
+        helper_primary_gres="gpu:rtx_2080_ti:1",
+        helper_primary_node="delta-slurm1",
+        helper_fallback_gres="gpu:rtx_3090:1",
+        helper_fallback_node="trpro-slurm1",
     )
