@@ -159,21 +159,36 @@ def launch_helper_with_fallback(iter_num, helper_id, helper_script_path, helper_
 def consume_helper_files(helper_specs):
     """Read all delivered helper .npz files and return concatenated arrays.
 
-    helper_specs: list of (job_id, output_path) tuples (from
-    launch_helper_with_fallback). Tuples with output_path=None are skipped.
+    helper_specs: list of (handle, output_path) tuples.
+    - handle for SLURM is an int job_id (no .get() method) — we just check
+      file presence at consume time.
+    - handle for Modal is a FunctionCall-like object with .get(), which we
+      call to wait for the helper to finish and refresh the shared volume.
+    Tuples with output_path=None are skipped.
     Files are deleted after successful consumption.
 
-    Returns (boards, policies, values, total_games). All four are None/0 if
-    nothing was consumed.
+    Returns (boards, policies, values, total_games). All None/0 if nothing.
     """
+    # Phase 1: wait for each helper to complete (backend-specific via duck-typing)
+    for handle, output_path in helper_specs:
+        if output_path is None:
+            continue
+        if hasattr(handle, "get"):
+            try:
+                handle.get(timeout=600)
+            except Exception as e:
+                print(f"         [helper] wait failed for "
+                      f"{os.path.basename(output_path)}: {e}")
+
+    # Phase 2: load every file that exists, regardless of how it got there
     all_b, all_p, all_v = [], [], []
     total_games = 0
-    for job_id, output_path in helper_specs:
+    for handle, output_path in helper_specs:
         if output_path is None:
             continue
         if not os.path.exists(output_path):
             print(f"         [helper] missing file: {os.path.basename(output_path)} "
-                  f"(job {job_id}) — proceeding without")
+                  f"(handle: {handle}) — proceeding without")
             continue
         try:
             data = np.load(output_path)
@@ -1306,12 +1321,17 @@ def train(
     # ── Decoupled helper jobs (recency injection; not stored in K-buffer) ──
     helpers_enabled: bool = False,
     helpers_per_iter: int = 2,
+    # SLURM-specific config (used when helper_launcher is None)
     helper_script_path: str = None,
     helper_max_wait_seconds: int = 25,
     helper_primary_gres: str = "gpu:rtx_2080_ti:1",
     helper_primary_node: str = "delta-slurm1",
     helper_fallback_gres: str = "gpu:rtx_3090:1",
     helper_fallback_node: str = "trpro-slurm1",
+    # Backend-agnostic launcher: callable (iter_num, helper_id, helper_dir) ->
+    # (handle, output_path). If provided, used instead of SLURM. Lets us
+    # plug in Modal, k8s, or any other concurrency backend.
+    helper_launcher=None,
 ):
     job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1361,19 +1381,27 @@ def train(
 
         # ── Launch decoupled helper jobs (if enabled) ───────────────────────
         helper_specs = []
-        if helpers_enabled and helper_script_path and replay_buffer_dir:
+        if helpers_enabled and replay_buffer_dir:
             cleanup_stale_helper_files(iter_num, replay_buffer_dir)
             print(f"         [helper] launching {helpers_per_iter} helper job(s) "
                   f"for iter {iter_num}")
-            for hid in range(helpers_per_iter):
-                helper_specs.append(launch_helper_with_fallback(
-                    iter_num, hid, helper_script_path, replay_buffer_dir,
-                    max_wait_seconds=helper_max_wait_seconds,
-                    primary_gres=helper_primary_gres,
-                    primary_node=helper_primary_node,
-                    fallback_gres=helper_fallback_gres,
-                    fallback_node=helper_fallback_node,
-                ))
+            if helper_launcher is not None:
+                # Custom backend (e.g. Modal). Callable returns (handle, output_path).
+                for hid in range(helpers_per_iter):
+                    helper_specs.append(helper_launcher(iter_num, hid, replay_buffer_dir))
+            elif helper_script_path:
+                # SLURM backend (default for cluster)
+                for hid in range(helpers_per_iter):
+                    helper_specs.append(launch_helper_with_fallback(
+                        iter_num, hid, helper_script_path, replay_buffer_dir,
+                        max_wait_seconds=helper_max_wait_seconds,
+                        primary_gres=helper_primary_gres,
+                        primary_node=helper_primary_node,
+                        fallback_gres=helper_fallback_gres,
+                        fallback_node=helper_fallback_node,
+                    ))
+            else:
+                print(f"         [helper] helpers_enabled but no launcher configured; skipping")
         helper_games_consumed = 0  # populated after self-play, used in training_log
 
         model.eval()
