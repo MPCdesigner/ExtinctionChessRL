@@ -3,6 +3,7 @@
 #include <numeric>
 #include <cstring>
 #include <cassert>
+#include <tuple>
 
 namespace ext {
 
