@@ -50,6 +50,7 @@ vol = modal.Volume.from_name("extinction-chess-state", create_if_missing=True)
     gpu="A10G",
     timeout=2 * 3600,
     volumes={"/app/state": vol},
+    retries=0,  # Don't auto-retry — a failed helper just gets skipped by main
 )
 def helper_function(iter_num: int, helper_id: int,
                     num_games: int = 200,
@@ -142,6 +143,7 @@ def helper_function(iter_num: int, helper_id: int,
     gpu="A10G",
     timeout=23 * 3600,
     volumes={"/app/state": vol},
+    retries=0,  # Don't auto-retry — a 3h training is too expensive to silently re-run
 )
 def train_alphazero():
     import sys
