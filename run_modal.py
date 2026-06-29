@@ -54,7 +54,9 @@ vol = modal.Volume.from_name("extinction-chess-state", create_if_missing=True)
 def helper_function(iter_num: int, helper_id: int,
                     num_games: int = 200,
                     num_simulations: int = 800,
-                    num_threads: int = 4):
+                    num_threads: int = 4,
+                    model_path: str = "/app/state/models/az_latest.pt",
+                    output_dir: str = "/app/state/replay_buffer"):
     import sys
     sys.path.insert(0, "/app/src")
     import os
@@ -73,8 +75,7 @@ def helper_function(iter_num: int, helper_id: int,
     # Refresh volume to see latest model written by main
     vol.reload()
 
-    model_path = "/app/state/models/az_latest.pt"
-    output_path = f"/app/state/replay_buffer/helper_v{iter_num}_id{helper_id}.npz"
+    output_path = f"{output_dir}/helper_v{iter_num}_id{helper_id}.npz"
 
     print(f"[helper {helper_id}] Loading model from {model_path}", flush=True)
     model, meta = AlphaZeroNet.load_checkpoint(model_path, migrate=True)
@@ -269,3 +270,114 @@ def list_state():
 def list_volume():
     """Inspect the Modal Volume contents."""
     list_state.remote()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Smoke test — runs the full pipeline (main + helpers) with tiny config
+# Isolated in /app/state/smoke/ so it doesn't touch production state.
+# Expected cost: ~$0.30-0.50, ~10-15 minutes wall time.
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.function(
+    gpu="A10G",
+    timeout=30 * 60,
+    volumes={"/app/state": vol},
+)
+def smoke_test_train():
+    import sys
+    sys.path.insert(0, "/app/src")
+    import multiprocessing
+    import os
+    import shutil
+
+    multiprocessing.set_start_method("spawn", force=True)
+    from alphazero import train
+
+    smoke_models = "/app/state/smoke/models"
+    smoke_buffer = "/app/state/smoke/replay_buffer"
+
+    vol.reload()
+    os.makedirs(smoke_models, exist_ok=True)
+    os.makedirs(smoke_buffer, exist_ok=True)
+
+    # Seed smoke dirs with current production state
+    prod_model = "/app/state/models/az_latest.pt"
+    smoke_model = f"{smoke_models}/az_latest.pt"
+    if not os.path.exists(smoke_model):
+        print(f"[smoke] copying {prod_model} -> {smoke_model}", flush=True)
+        shutil.copy(prod_model, smoke_model)
+    prod_buffer = "/app/state/replay_buffer"
+    if os.path.isdir(prod_buffer):
+        for f in sorted(os.listdir(prod_buffer))[-5:]:
+            if f.startswith("iter_") and f.endswith(".npz"):
+                dst = f"{smoke_buffer}/{f}"
+                if not os.path.exists(dst):
+                    print(f"[smoke] copying {f}", flush=True)
+                    shutil.copy(f"{prod_buffer}/{f}", dst)
+    vol.commit()
+
+    class ModalHelperHandle:
+        def __init__(self, fc):
+            self.fc = fc
+
+        def get(self, timeout=None):
+            try:
+                self.fc.get(timeout=timeout)
+            except Exception as e:
+                print(f"         [helper] FunctionCall.get() error: {e}", flush=True)
+            vol.reload()
+
+        def __repr__(self):
+            return f"ModalHelperHandle({self.fc.object_id})"
+
+    def smoke_helper_launcher(iter_num, helper_id, helper_dir):
+        output_path = f"{helper_dir}/helper_v{iter_num}_id{helper_id}.npz"
+        vol.commit()
+        fc = helper_function.spawn(
+            iter_num, helper_id,
+            num_games=10,
+            num_simulations=50,
+            num_threads=4,
+            model_path=smoke_model,
+            output_dir=smoke_buffer,
+        )
+        print(f"         [helper {helper_id}] spawned smoke call "
+              f"(id={fc.object_id})", flush=True)
+        return (ModalHelperHandle(fc), output_path)
+
+    train(
+        iterations=1,
+        games_per_iteration=20,
+        num_simulations=50,
+        learning_rate=0.00002,
+        models_dir=smoke_models,
+        resume=True,
+        num_workers=4,
+        hard_win_positions=20,
+        extra_hard_win_positions=0,
+        max_wall_time=25 * 60,
+        num_epochs=1,
+        drilling_epochs=1,
+        drilling_lr_factor=0.5,
+        extra_hard_epochs=1,
+        extra_hard_lr_factor=0.025,
+        replay_buffer_dir=smoke_buffer,
+        replay_buffer_size=5,
+        helpers_enabled=True,
+        helpers_per_iter=2,
+        helper_launcher=smoke_helper_launcher,
+    )
+
+    vol.commit()
+    print("[smoke] complete", flush=True)
+
+
+@app.local_entrypoint()
+def smoke():
+    """Run a tiny end-to-end smoke test on Modal.
+
+    Verifies: image build, model load from Volume, main self-play,
+    helper spawning + consumption, training step, checkpoint save.
+    Uses isolated /app/state/smoke/ — production state untouched.
+    """
+    smoke_test_train.remote()
