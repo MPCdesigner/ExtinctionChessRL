@@ -139,7 +139,7 @@ def helper_function(iter_num: int, helper_id: int,
 # ═════════════════════════════════════════════════════════════════════════════
 
 @app.function(
-    gpu="A100-80GB",
+    gpu="A10G",
     timeout=23 * 3600,
     volumes={"/app/state": vol},
 )
@@ -183,7 +183,7 @@ def train_alphazero():
     vol.reload()
 
     train(
-        iterations=100,
+        iterations=5,  # Sized to fit ~$30 budget on A10G (~$6/iter)
         games_per_iteration=400,
         num_simulations=800,
         learning_rate=0.00002,
