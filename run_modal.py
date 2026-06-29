@@ -300,6 +300,17 @@ def smoke_test_train():
     os.makedirs(smoke_models, exist_ok=True)
     os.makedirs(smoke_buffer, exist_ok=True)
 
+    # Cleanup orphans from any previous failed run (e.g. iter_*.npz.tmp.npz
+    # left over from a pre-fix atomic_savez bug, or *.tmp partial writes).
+    for f in os.listdir(smoke_buffer):
+        if (f.endswith(".tmp")
+                or f.endswith(".tmp.npz")
+                or (f.startswith("iter_") and f.endswith(".npz")
+                    and not f[5:-4].isdigit())):
+            path = f"{smoke_buffer}/{f}"
+            print(f"[smoke] cleanup orphan: {f}", flush=True)
+            os.remove(path)
+
     # Seed smoke dirs with current production state
     prod_model = "/app/state/models/az_latest.pt"
     smoke_model = f"{smoke_models}/az_latest.pt"

@@ -194,14 +194,15 @@ def consume_helper_files(helper_specs):
                   f"(handle: {handle}) — proceeding without")
             continue
         try:
-            data = np.load(output_path)
-            all_b.append(data["boards"].astype(np.float32))
-            all_p.append(data["policies"])
-            all_v.append(data["values"])
-            n_games = int(data["num_games"]) if "num_games" in data.files else 0
+            with np.load(output_path) as data:
+                all_b.append(data["boards"].astype(np.float32))
+                all_p.append(np.asarray(data["policies"]))
+                all_v.append(np.asarray(data["values"]))
+                n_games = int(data["num_games"]) if "num_games" in data.files else 0
+                n_positions = len(data["boards"])
             total_games += n_games
             print(f"         [helper] consumed {os.path.basename(output_path)} "
-                  f"({n_games} games, {len(data['boards'])} positions)")
+                  f"({n_games} games, {n_positions} positions)")
             os.remove(output_path)
         except Exception as e:
             print(f"         [helper] failed to load {output_path}: {e}")
@@ -1524,16 +1525,22 @@ def train(
             # Phase 2: load buffer contents for training (replaces current iter's data)
             if replay_buffer_size > 1:
                 t_rb_load = time.time()
+                # Match strict iter_<N>.npz pattern so we don't pick up
+                # orphans like iter_<N>.npz.tmp.npz from old buggy runs.
                 files = sorted([
                     f for f in os.listdir(replay_buffer_dir)
                     if f.startswith("iter_") and f.endswith(".npz")
+                    and f[5:-4].isdigit()
                 ])
                 buf_boards, buf_policies, buf_values = [], [], []
                 for fname in files:
-                    data = np.load(os.path.join(replay_buffer_dir, fname))
-                    buf_boards.append(data["boards"].astype(np.float32))
-                    buf_policies.append(data["policies"])
-                    buf_values.append(data["values"])
+                    # Use context manager so the NpzFile zip handle closes
+                    # immediately — needed for Modal Volume reload to work
+                    # since it refuses to refresh while files are still open.
+                    with np.load(os.path.join(replay_buffer_dir, fname)) as data:
+                        buf_boards.append(data["boards"].astype(np.float32))
+                        buf_policies.append(np.asarray(data["policies"]))
+                        buf_values.append(np.asarray(data["values"]))
                 all_boards = np.concatenate(buf_boards)
                 all_policies = np.concatenate(buf_policies)
                 all_values = np.concatenate(buf_values)
