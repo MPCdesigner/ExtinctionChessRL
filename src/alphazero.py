@@ -38,8 +38,11 @@ from state_encoder import StateEncoder
 # ═════════════════════════════════════════════════════════════════════════════
 
 def atomic_savez_compressed(path, **arrays):
+    # Pass a file object instead of a path string so numpy doesn't auto-append
+    # ".npz" to ".tmp" suffixes (it does that silently for string paths).
     tmp_path = path + ".tmp"
-    np.savez_compressed(tmp_path, **arrays)
+    with open(tmp_path, "wb") as f:
+        np.savez_compressed(f, **arrays)
     os.replace(tmp_path, path)
 
 
