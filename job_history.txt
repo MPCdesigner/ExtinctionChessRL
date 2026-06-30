@@ -86,6 +86,10 @@ Job       Iters      Node           Start               End                 Dura
 533805    680-688    trpro-slurm1   Jun 23 ~10:30       Jun 24 ~08:00       ~22h      COMPLETED   iter 680 hit new best; B winning more than W in 6 of 9 iters (style skew emerging)
 533883    689-692    trpro-slurm1   Jun 24 ~22:00       Jun 25 ~22:54       ~24h      KILLED      trpro-slurm1 NODE_FAIL (Not responding) at Jun 25 22:55 UTC; iter 693 lost mid-self-play; checkpoint at iter 692 intact; iter 690 hit 98% (first sub-100% milestone). No auto-resubmit fired; cluster has been down/drained since
 
+— Cluster outage forced migration to Modal (~Jun 25 onwards). All compute nodes drained/down. —
+
+ap-E2lmPbu  693-696    Modal A10G     Jun 29 08:55 EDT    Jun 29 14:43 EDT    ~5h 48m   STOPPED     First Modal production run on account henryliang416525. helpers_enabled=True (first real test of helper architecture). Iter 697 cancelled mid-self-play to preserve ~$1 remaining budget. Color skew flipped to W>B at iter 695. Value loss settling at ~0.24-0.26. Cost: ~$29 of $30 credit. Helper games per iter: 400 (2 helpers × 200)
+
 
 Log Access
 ----------

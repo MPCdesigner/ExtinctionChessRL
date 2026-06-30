@@ -687,3 +687,7 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  690  196  203   1    11292      0    8174.0s   63.0s    8451252   2.4543  2.2495  0.2048  98% vs random, new best
  691  186  214   0    12174      0    8808.8s   63.6s    9145630   2.4715  2.2618  0.2097
  692  180  219   1    10842      0    7782.9s   63.4s    8126186   2.4524  2.2476  0.2048  (iter 693 lost to NODE_FAIL)
+ 693  174  225   1    11335    400    5128.3s   92.4s    8490079   2.5847  2.3222  0.2626  Modal A10G; first helper-augmented iter
+ 694  186  213   1    12080    400    5360.2s   95.7s    9080360   2.5687  2.3206  0.2481
+ 695  204  194   2    12403    400    5430.2s   97.1s    9306155   2.5724  2.3313  0.2410  W>B for first time since iter 670
+ 696  207  192   1    11160    400    4683.5s   95.5s    8337264   2.5826  2.3377  0.2448  Modal run stopped (budget); iter 697 lost
