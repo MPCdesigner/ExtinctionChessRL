@@ -691,3 +691,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  694  186  213   1    12080    400    5360.2s   95.7s    9080360   2.5687  2.3206  0.2481
  695  204  194   2    12403    400    5430.2s   97.1s    9306155   2.5724  2.3313  0.2410  W>B for first time since iter 670
  696  207  192   1    11160    400    4683.5s   95.5s    8337264   2.5826  2.3377  0.2448  Modal run stopped (budget); iter 697 lost
+ 697  200  200   0    11670      0   10970.4s   83.6s    8756094   2.4467  2.2464  0.2003  Cluster resumed; atomic-write fix confirmed; helpers all TIMEOUT'd on trpro-slurm1
+ 698  186  212   2    12006      0   11413.2s   83.2s    8987430   2.4570  2.2603  0.1967  helpers couldn't allocate (blocked by 697 zombies)
+ 699  202  198   0    11472      0   10735.8s   82.0s    8610096   2.4593  2.2600  0.1993  helpers timed out
+ 700  179  221   0    12057      0   11361.9s   81.6s    9053097   2.4580  2.2605  0.1975  100% vs random, new best; helpers timed out
+ 701  183  217   0    12049      0   11277.8s   82.9s    9054353   2.4524  2.2554  0.1970  helpers timed out
+ 702  217  183   0    12153      0   11455.0s   84.0s    9134745   2.4505  2.2586  0.1920  W>B; helpers timed out
+ 703  187  213   0    11961      0   11292.5s   83.8s    8983593   2.4622  2.2672  0.1949  helpers timed out; job resubmit fired
