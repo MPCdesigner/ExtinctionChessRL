@@ -95,7 +95,8 @@ ap-E2lmPbu  693-696    Modal A10G     Jun 29 08:55 EDT    Jun 29 14:43 EDT    ~5
 548499-559261 (cascade)  697(x8)  delta-slurm1  Jun 30 12:07 EDT  Jul 1 14:23 EDT  ~30h wasted  CASCADE  8 auto-resubmit failures at iter 697 buffer write. atomic_savez_compressed had numpy auto-append bug — fixed locally on Modal but not deployed to cluster before resume. Each job did ~3h self-play then FileNotFoundError, shell exit 0, sacct COMPLETED, auto-resubmit fires. ~24h main + ~32h helper compute wasted. Fix uploaded to cluster ~Jul 1 16:24. See [[auto-resubmit-cascade-risk]] memory.
 559266    697       delta-slurm1  Jul 1 14:23 EDT  Jul 1 17:09 EDT  ~2h 46m   CANCELLED  Last cascade attempt; user cancelled before crash to break the loop
 559932    697-703   delta-slurm1  Jul 1 17:09 EDT  Jul 2 15:07 EDT  ~22h      COMPLETED  First job with atomic-write fix. 7 iters completed but ALL in DEGRADED MODE (helpers all TIMEOUT'd on trpro-slurm1 due to contention + cascading zombie helpers blocking next iter). Iter 700 hit 100% (new best checkpoint saved). Value loss settled to ~0.19-0.20 (back to cluster baseline). Auto-resubmit fired for 560506 at wall-time exit.
-560506    704-      delta-slurm1  Jul 2 15:07 EDT  (running)  —  RUNNING  Auto-resubmit from 559932; still degraded mode until helper.sh is fixed for delta-slurm1 fit (2-CPU/2-thread)
+560506    704-709   delta-slurm1  Jul 2 15:07 EDT  Jul 4 ~11:00 EDT  ~22h      COMPLETED  Auto-resubmit from 559932. Iters 704-706 still degraded (helpers TIMEOUT'd on trpro-slurm1). HELPERS WORKED starting iter 707 — first successful helper consumption ever on the cluster! +400 games merged per iter 707-709. Total training set with helpers ~73k positions vs ~60k without. Loss went up (2.62 vs 2.50) — larger, more diverse training pool. iter 709 flipped to W>B (first time in 15 iters). Final eval 98% (iter 710 didn't fit in wall-time budget).
+561141    710-      delta-slurm1  Jul 4 ~11:00 EDT  (running)  —  RUNNING  Auto-resubmit from 560506
 
 
 Log Access
@@ -180,5 +181,6 @@ tail -10 ~/train_533805.log                         # 533805   iters 680-688
 tail -10 ~/train_533883.log                         # 533883   iters 689-692 (KILLED by trpro-slurm1 NODE_FAIL)
 # 548499-559261 archived under ~/train_logs_crashed/ (8 identical iter 697 crashes, ~1618 bytes each)
 tail -10 ~/train_559932.log                         # 559932   iters 697-703 (first job with atomic-write fix, all degraded mode)
-tail -10 ~/train_560506.log                         # 560506   iters 704+  (running)
+tail -10 ~/train_560506.log                         # 560506   iters 704-709 (helpers finally worked from iter 707)
+tail -10 ~/train_561141.log                         # 561141   iters 710+  (running)
  

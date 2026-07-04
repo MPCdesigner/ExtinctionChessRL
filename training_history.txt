@@ -698,3 +698,9 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  701  183  217   0    12049      0   11277.8s   82.9s    9054353   2.4524  2.2554  0.1970  helpers timed out
  702  217  183   0    12153      0   11455.0s   84.0s    9134745   2.4505  2.2586  0.1920  W>B; helpers timed out
  703  187  213   0    11961      0   11292.5s   83.8s    8983593   2.4622  2.2672  0.1949  helpers timed out; job resubmit fired
+ 704  192  208   0    11942      0   11311.2s   84.3s    8961766   2.4987  2.2961  0.2025  helpers still failing
+ 705  178  221   1    12627      0   12061.5s   85.2s    9496739   2.5128  2.3048  0.2080  helpers still failing
+ 706  185  214   1    12305      0   11723.0s   87.0s    9257433   2.5019  2.3035  0.1985  helpers still failing
+ 707  181  219   0    12401    400   11828.4s  102.0s    9313345   2.6212  2.3823  0.2389  HELPERS WORKED! +400 games merged, 72559 total positions
+ 708  191  209   0    11947    400   11440.4s  102.4s    9008819   2.6184  2.3838  0.2346  helpers OK
+ 709  205  195   0    12199    400   11640.2s  103.9s    9180991   2.6280  2.3900  0.2380  helpers OK; W>B first time in 15 iters
