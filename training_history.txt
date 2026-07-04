@@ -704,7 +704,7 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  707  181  219   0    12401    400   11828.4s  102.0s    9313345   2.6212  2.3823  0.2389  HELPERS WORKED! +400 games merged, 72559 total positions
  708  191  209   0    11947    400   11440.4s  102.4s    9008819   2.6184  2.3838  0.2346  helpers OK
  709  205  195   0    12199    400   11640.2s  103.9s    9180991   2.6280  2.3900  0.2380  helpers OK; W>B first time in 15 iters
- 710  193  207   0    11847      0   11539.1s   85.8s    8900655   2.5013  2.3015  0.1998  ★ new best 100% vs random; helpers missing (both); moved to trpro-slurm1 (num_threads=8)
+ 710  193  207   0    11847      0   11539.1s   85.8s    8900655   2.5013  2.3015  0.1998  ★ new best 100% vs random; helpers missing (both)
  711  197  202   1    11806      0   11252.2s   84.2s    8853574   2.4950  2.2969  0.1981  helpers missing (both)
  712  192  208   0    12026    400   11601.8s  100.2s    9034770   2.6007  2.3652  0.2355  helpers OK; 71666 pos merged
  713  200  199   1    12211    400   11718.1s  100.7s    9191691   2.6014  2.3662  0.2351  helpers OK; 71751 pos merged

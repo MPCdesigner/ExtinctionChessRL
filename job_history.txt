@@ -96,8 +96,8 @@ ap-E2lmPbu  693-696    Modal A10G     Jun 29 08:55 EDT    Jun 29 14:43 EDT    ~5
 559266    697       delta-slurm1  Jul 1 14:23 EDT  Jul 1 17:09 EDT  ~2h 46m   CANCELLED  Last cascade attempt; user cancelled before crash to break the loop
 559932    697-703   delta-slurm1  Jul 1 17:09 EDT  Jul 2 15:07 EDT  ~22h      COMPLETED  First job with atomic-write fix. 7 iters completed but ALL in DEGRADED MODE (helpers all TIMEOUT'd on trpro-slurm1 due to contention + cascading zombie helpers blocking next iter). Iter 700 hit 100% (new best checkpoint saved). Value loss settled to ~0.19-0.20 (back to cluster baseline). Auto-resubmit fired for 560506 at wall-time exit.
 560506    704-709   delta-slurm1  Jul 2 15:07 EDT  Jul 4 ~11:00 EDT  ~22h      COMPLETED  Auto-resubmit from 559932. Iters 704-706 still degraded (helpers TIMEOUT'd on trpro-slurm1). HELPERS WORKED starting iter 707 — first successful helper consumption ever on the cluster! +400 games merged per iter 707-709. Total training set with helpers ~73k positions vs ~60k without. Loss went up (2.62 vs 2.50) — larger, more diverse training pool. iter 709 flipped to W>B (first time in 15 iters). Final eval 98% (iter 710 didn't fit in wall-time budget).
-561141    710-716   trpro-slurm1  Jul 4 ~11:00 EDT  Jul 4 ~09:00 EDT+22h  ~22h      COMPLETED  Auto-resubmit from 560506. Main ran on trpro-slurm1 3090 (num_threads=8 in log), NOT delta-slurm1 — SLURM scheduled it there. Two milestones: iter 710 hit 100% vs random (★ new best, saved as .pt); iter 716 also hit 100% (final eval, not a .pt save point). Helper reliability much improved: 5/7 iters got full 400 (712, 713, 715, 716; iter 710 helpers were still coming from prior job's contention window and missed), 1/7 partial (714 got 200), 2/7 missed (710, 711). Loss pattern: iters without helpers ~2.50; iters with 400 helpers ~2.58-2.60 (larger, more diverse dataset). Drilling loss dropped from 0.64 → 0.54 across the batch — clean improvement. Wall-time exit before iter 717.
-562019    717-      trpro-slurm1  Jul 4 ~09:00 EDT+22h  (running)  —  RUNNING  Auto-resubmit from 561141
+561141    710-716   delta-slurm1  Jul 4 ~11:00 EDT  Jul 5 ~09:00 EDT  ~22h      COMPLETED  Auto-resubmit from 560506. Two milestones: iter 710 hit 100% vs random (★ new best, saved as .pt); iter 716 also hit 100% (final eval, not a .pt save point). Helper reliability much improved: 5/7 iters got full 400 (712, 713, 715, 716), 1/7 partial (714 got 200), 2/7 missed (710, 711). Loss pattern: iters without helpers ~2.50; iters with 400 helpers ~2.58-2.60 (larger, more diverse dataset). Drilling loss dropped from 0.64 → 0.54 across the batch — clean improvement. Wall-time exit before iter 717.
+562019    717-      delta-slurm1  Jul 5 ~09:00 EDT  (running)  —  RUNNING  Auto-resubmit from 561141
 
 
 Log Access
@@ -183,6 +183,6 @@ tail -10 ~/train_533883.log                         # 533883   iters 689-692 (KI
 # 548499-559261 archived under ~/train_logs_crashed/ (8 identical iter 697 crashes, ~1618 bytes each)
 tail -10 ~/train_559932.log                         # 559932   iters 697-703 (first job with atomic-write fix, all degraded mode)
 tail -10 ~/train_560506.log                         # 560506   iters 704-709 (helpers finally worked from iter 707)
-tail -10 ~/train_561141.log                         # 561141   iters 710-716 (trpro-slurm1; iters 710 & 716 both 100%)
+tail -10 ~/train_561141.log                         # 561141   iters 710-716 (iters 710 & 716 both 100%)
 tail -10 ~/train_562019.log                         # 562019   iters 717+  (running)
  
