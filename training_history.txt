@@ -725,3 +725,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  728  199  200   1    11906    400   11267.2s   99.5s    8951458   2.5795  2.3480  0.2315  helpers OK; 71212 pos
  729  185  214   1    11413    400   10861.2s   98.5s    8570413   2.5744  2.3429  0.2315  helpers OK; 70613 pos
  730  207  191   2    12417    400   11862.8s  101.2s    9338529   2.5938  2.3581  0.2357  ★ new best 100% vs random; helpers OK; W>B; 71934 pos; first iter with 8-thread helpers
+ 731  187  209   4    11931    400   11260.4s   98.8s    8973515   2.5753  2.3302  0.2451  helpers OK; 70735 pos; buffer_write=8-CPU config (delta sbatch immediate reject)
+ 732  200  199   1    11311    400   10667.4s   98.9s    8500511   2.5505  2.3179  0.2326  helpers OK; 70689 pos; 4-CPU helper config applied from here
+ 733  186  214   0    11732    400   10980.2s   99.3s    8807860   2.5654  2.3255  0.2399  helpers OK; 70949 pos
+ 734  212  186   2    12288    400   11541.6s  100.3s    9224936   2.5638  2.3315  0.2323  helpers OK; W>B; 71723 pos
+ 735  208  190   2    12449    400   11873.6s  100.3s    9355633   2.5719  2.3377  0.2341  helpers OK; W>B; 71621 pos
+ 736  219  181   0    12365    400   11701.1s  101.4s    9295429   2.5767  2.3460  0.2307  helpers OK; heavy W>B; 72170 pos
+ 737  201  199   0    11913    400   11349.7s  101.8s    8940505   2.5600  2.3365  0.2235  helpers OK; 72379 pos; new LOW value loss; 100% at wall-time final eval; wall-time exit
