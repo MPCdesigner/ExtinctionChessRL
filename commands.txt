@@ -69,11 +69,18 @@ Interactive menu (select models, sims, positions in GUI):
 == BENCHMARK TESTS (submitted from cluster shell after SSH) ==
 
 The 4-test battery run after each new 100% checkpoint (checkpoints exist only
-at multiples of 10). All sbatched on trpro-slurm1 with 1× RTX 3090.
+at multiples of 10).
 
-Add --nice=10000 to ALL test submissions so helpers get scheduling priority
-over pending tests. Nice does NOT preempt already-running tests — it only
-affects queue order.
+PREFERRED — use trpro-slurm2 (RTX 4090). It is isolated from training
+(main = delta-slurm1, helpers = trpro-slurm1), so tests never contend
+with helpers for CPU cache / memory bandwidth. Verified working Jul 7.
+
+FALLBACK — trpro-slurm1 (RTX 3090). Only use if trpro-slurm2 is down.
+On trpro-slurm1, MUST add --nice=10000 so pending helpers always outrank
+pending tests. Even with --nice, running tests block helper allocations
+until they finish, and MCTS-heavy tests running alongside helpers cause
+2-3x slowdown for both. Prefer waiting for auto-resubmit gaps between
+main jobs.
 
 Filename convention on cluster: az_iter_<N>_<WIN_PCT>pct.pt
   - Most are _100pct.pt
@@ -85,38 +92,46 @@ with the FULL 4-test battery, NOT necessarily the most recent 100%. Example:
 iter 720 was benchmarked with iter 680 as anchor (iter 690, 700, 710 were
 skipped in-between).
 
---- Test 1: WIN-TAKING (multi-model, ~10 min clean / ~30 min contended) ---
+--- Test 1: WIN-TAKING (multi-model, ~10 min on trpro-slurm2 clean) ---
 Given 200 forced-win positions, does each model find the winning move at
 20/50/100/200 sim depth? Higher % = better tactical play.
 
 Model list covers ~24 checkpoints spanning last ~240 iters + 340 + 100.
 Example list used for iter 720 (Jul 5 2026):
 
-sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 --mem=16G --time=2:00:00 --nodelist=trpro-slurm1 --nice=10000 --output=$HOME/bench_win_taking_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 bench_win_taking.py --models az_iter_720_100pct.pt az_iter_710_100pct.pt az_iter_700_100pct.pt az_iter_690_98pct.pt az_iter_680_100pct.pt az_iter_670_100pct.pt az_iter_660_100pct.pt az_iter_650_100pct.pt az_iter_640_100pct.pt az_iter_630_100pct.pt az_iter_620_100pct.pt az_iter_610_100pct.pt az_iter_600_100pct.pt az_iter_590_100pct.pt az_iter_580_100pct.pt az_iter_570_100pct.pt az_iter_560_100pct.pt az_iter_550_98pct.pt az_iter_540_100pct.pt az_iter_520_100pct.pt az_iter_500_100pct.pt az_iter_480_100pct.pt az_iter_340_100pct.pt az_iter_100_100pct.pt --sims 20 50 100 200 --positions 200 --hard-only --min-distance 5"
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=2:00:00 --nodelist=trpro-slurm2 --output=$HOME/bench_win_taking_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 bench_win_taking.py --models az_iter_720_100pct.pt az_iter_710_100pct.pt az_iter_700_100pct.pt az_iter_690_98pct.pt az_iter_680_100pct.pt az_iter_670_100pct.pt az_iter_660_100pct.pt az_iter_650_100pct.pt az_iter_640_100pct.pt az_iter_630_100pct.pt az_iter_620_100pct.pt az_iter_610_100pct.pt az_iter_600_100pct.pt az_iter_590_100pct.pt az_iter_580_100pct.pt az_iter_570_100pct.pt az_iter_560_100pct.pt az_iter_550_98pct.pt az_iter_540_100pct.pt az_iter_520_100pct.pt az_iter_500_100pct.pt az_iter_480_100pct.pt az_iter_340_100pct.pt az_iter_100_100pct.pt --sims 20 50 100 200 --positions 200 --hard-only --min-distance 5"
+
+If trpro-slurm2 is unavailable, fall back to:
+  --gres=gpu:rtx_3090:1 --nodelist=trpro-slurm1 --nice=10000
 
 For future runs, keep prepending the new iters to the front and drop iters
 from the tail if the list gets too long (>30 models). Always keep iter 100
 as the baseline anchor.
 
---- Test 2: VS ADVANCED TACTICAL RANDOM (~30 min clean / 60-90 contended) ---
+--- Test 2: VS ADVANCED TACTICAL RANDOM (~30 min clean on trpro-slurm2) ---
 Full-game play at 5 sim levels (20/50/100/200/400) against an opponent that
 takes free pieces and wins in 1 when available (semi-random otherwise).
 Result is total W/L/D + per-sim breakdown. Replace <NEW> with iter number.
 
-sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm1 --nice=10000 --output=$HOME/tactical_<NEW>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 bench_vs_tactical.py --model az_iter_<NEW>_100pct.pt --device cuda"
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm2 --output=$HOME/tactical_<NEW>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 bench_vs_tactical.py --model az_iter_<NEW>_100pct.pt --device cuda"
 
 --- Test 3: VS ITER 100 (historical baseline, ~30 min clean) ---
 Sanity check that the network has advanced vs a known-weak historical
 checkpoint. Should be near-100% win rate. Replace <NEW>.
 
-sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm1 --nice=10000 --output=$HOME/compare_<NEW>vs100_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_100_100pct.pt --m2 az_iter_<NEW>_100pct.pt --device cuda"
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm2 --output=$HOME/compare_<NEW>vs100_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_100_100pct.pt --m2 az_iter_<NEW>_100pct.pt --device cuda"
 
 --- Test 4: VS PREVIOUS ANCHOR (H2H advancement, ~30 min clean) ---
 Direct comparison to the last-benchmarked checkpoint. Replace <NEW> and
 <ANCHOR>. compare_extensive.py convention: m1 = older reference,
 m2 = new checkpoint being tested.
 
-sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm1 --nice=10000 --output=$HOME/compare_<NEW>vs<ANCHOR>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_<ANCHOR>_100pct.pt --m2 az_iter_<NEW>_100pct.pt --device cuda"
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm2 --output=$HOME/compare_<NEW>vs<ANCHOR>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_<ANCHOR>_100pct.pt --m2 az_iter_<NEW>_100pct.pt --device cuda"
+
+Fallback to trpro-slurm1 for Tests 2-4: replace
+  --gres=gpu:rtx_4090:1 --nodelist=trpro-slurm2
+with
+  --gres=gpu:rtx_3090:1 --nodelist=trpro-slurm1 --nice=10000
 
 --- Checking test results ---
   tail -60 ~/bench_win_taking_<JOBID>.log
@@ -128,22 +143,21 @@ Find the JOBID from the "Submitted batch job <ID>" line printed by sbatch,
 or from squeue -u h74liang.
 
 --- Contention notes ---
-  - trpro-slurm1 has 4× RTX 3090. Up to 4 tests can run concurrently in
-    theory, but tests contend with running helpers (also on trpro-slurm1)
-    for CPU L3 cache and memory bandwidth. Concurrent tests during helper
-    activity have measured 2-3x slower than clean runs.
-  - Prefer submitting tests during main's between-iter windows (rare, ~90s
-    of training time) or between full main jobs (auto-resubmit gap, ~30s).
-  - --nice=10000 is mandatory for background test runs so a pending test
-    never blocks a helper waiting to allocate a GPU.
-  - Alternative: --nodelist=trpro-slurm2 (RTX 4090) if sinfo shows it idle.
-    Historically flagged CUDA-error but may be recovered — smoke-test first.
+  - Prefer trpro-slurm2 (isolated from training). Verified Jul 7.
+  - On trpro-slurm2, --nice is optional — nothing to contend with.
+  - Trpro-slurm1 fallback contention: tests running alongside helpers
+    experience 2-3x slowdown due to shared CPU L3 cache and memory
+    bandwidth. Both tests AND helpers get slower. Avoid unless necessary.
+  - --nice=10000 is mandatory for trpro-slurm1 test runs so a pending
+    test never blocks a helper waiting to allocate a GPU.
   - Retroactive nice bump on a pending job: scontrol update jobid=<ID> nice=10000
+  - Smoke test for trpro-slurm2 before using (in case it goes down again):
+    sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=2 --mem=8G --time=00:05:00 --nodelist=trpro-slurm2 --output=$HOME/smoke_4090_%j.log --wrap="python3 -c 'import torch; assert torch.cuda.is_available(); t = torch.randn(1000,1000, device=\"cuda\"); print(\"OK:\", t.sum().item())'"
 
 == GPU NOTES ==
 
 delta-slurm1  (RTX 2080 Ti) — main training home
-trpro-slurm1  (RTX 3090)    — helper node + benchmark node
-trpro-slurm2  (RTX 4090)    — historically CUDA error; may be recovered, worth testing
+trpro-slurm1  (RTX 3090)    — helper node (do NOT run tests here during training)
+trpro-slurm2  (RTX 4090)    — PREFERRED for tests (isolated from training). Verified Jul 7.
 tr-slurm2     (GTX 1080)    — drain + CUDA errors
 wato2-slurm1  (RTX 2080 Ti) — down
