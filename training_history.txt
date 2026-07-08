@@ -732,3 +732,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  735  208  190   2    12449    400   11873.6s  100.3s    9355633   2.5719  2.3377  0.2341  helpers OK; W>B; 71621 pos
  736  219  181   0    12365    400   11701.1s  101.4s    9295429   2.5767  2.3460  0.2307  helpers OK; heavy W>B; 72170 pos
  737  201  199   0    11913    400   11349.7s  101.8s    8940505   2.5600  2.3365  0.2235  helpers OK; 72379 pos; new LOW value loss; 100% at wall-time final eval; wall-time exit
+ 738  208  192   0    12096    400   11281.1s  102.2s    9076744   2.5700  2.3335  0.2365  helpers OK; 72849 pos; first job with main num_threads=4
+ 739  199  201   0    11965    400   11177.0s  103.0s    8992181   2.5733  2.3454  0.2279  helpers OK; 72983 pos
+ 740  211  188   1    12442    400   11666.3s  102.8s    9331938   2.5769  2.3473  0.2296  ★ new best 100% vs random; helpers OK; 73352 pos; benchmark battery ran on this checkpoint
+ 741  206  194   0    11178    400   10427.0s  100.0s    8380442   2.5657  2.3373  0.2283  helpers OK; 71415 pos
+ 742  211  188   1    12631    400   12142.3s  101.6s    9492015   2.5771  2.3498  0.2273  helpers OK; 72476 pos
+ 743  221  178   1    11493    400   10764.8s  100.9s    8620997   2.5632  2.3387  0.2245  helpers OK; W>B by 43; 71319 pos; near iter 737 value loss low
+ 744  206  194   0    11152    400   10597.2s   98.5s    8357856   2.5698  2.3387  0.2311  helpers OK; 70188 pos; last iter under LR=0.00002; wall-time exit
