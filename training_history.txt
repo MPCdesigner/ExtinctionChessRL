@@ -739,3 +739,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  742  211  188   1    12631    400   12142.3s  101.6s    9492015   2.5771  2.3498  0.2273  helpers OK; 72476 pos
  743  221  178   1    11493    400   10764.8s  100.9s    8620997   2.5632  2.3387  0.2245  helpers OK; W>B by 43; 71319 pos; near iter 737 value loss low
  744  206  194   0    11152    400   10597.2s   98.5s    8357856   2.5698  2.3387  0.2311  helpers OK; 70188 pos; last iter under LR=0.00002; wall-time exit
+ 745  211  189   0    11481    400   10834.1s   96.5s    8592305   2.5809  2.3360  0.2450  FIRST iter with LR=0.00005; value loss jumped 0.2311→0.2450 (expected destabilization)
+ 746  196  203   1    11963    400   11341.6s   99.4s    9006659   2.5832  2.3483  0.2349  helpers OK; 70885 pos; still oscillating
+ 747  185  213   2    11827    400   11008.7s   97.8s    8874419   2.5866  2.3493  0.2373  B>W emerging; 69943 pos
+ 748  190  207   3    12189    400   11439.0s   98.4s    9144389   2.5734  2.3388  0.2346  B>W; 70273 pos
+ 749  175  223   2    12200    400   11593.4s  102.1s    9142232   2.5582  2.3321  0.2261  strong B>W (223-175); 72019 pos; converging
+ 750  188  210   2    11475    200   10784.0s   91.3s    8607747   2.4894  2.2797  0.2097  ★ new best 100% vs random; helper id1 missing; +200 games only; NEW LOWS on total (2.489) & value (0.210) losses
+ 751  198  201   1    11363    400   10621.8s   98.4s    8516307   2.5294  2.3030  0.2264  helpers OK; 70342 pos; partial revert but still below pre-bump trend; wall-time exit
