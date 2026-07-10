@@ -746,3 +746,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  749  175  223   2    12200    400   11593.4s  102.1s    9142232   2.5582  2.3321  0.2261  strong B>W (223-175); 72019 pos; converging
  750  188  210   2    11475    200   10784.0s   91.3s    8607747   2.4894  2.2797  0.2097  ★ new best 100% vs random; helper id1 missing; +200 games only; NEW LOWS on total (2.489) & value (0.210) losses
  751  198  201   1    11363    400   10621.8s   98.4s    8516307   2.5294  2.3030  0.2264  helpers OK; 70342 pos; partial revert but still below pre-bump trend; wall-time exit
+ 752  198  202   0    11652    400   11210.0s   99.3s    8737308   2.5290  2.2891  0.2399  helpers OK; 70319 pos; 2nd LR=0.00005 job starts
+ 753  190  210   0    10688    400   10138.6s   97.4s    8007872   2.5155  2.2876  0.2279  helpers OK; 69269 pos
+ 754  211  188   1    11510    200   10950.9s   87.7s    8626478   2.4912  2.2759  0.2153  helper id1 could not allocate; +200 only; value loss dropped again (helper-availability artifact)
+ 755  179  220   1    11482      0   10955.0s   80.4s    8606434   2.4189  2.2266  0.1923  BOTH helpers missing; no helper data; new lows in ALL losses — confirms value loss "improvements" tied to missing helpers
+ 756  204  195   1    11601    400   10969.9s   97.3s    8693417   2.5425  2.3081  0.2344  helpers OK; 69115 pos; loss BOUNCED BACK when helpers returned
+ 757  194  204   2    11599    400   11050.3s   96.1s    8706551   2.5456  2.3126  0.2330  helpers OK; 68475 pos
+ 758  197  202   1    11110    400   10450.8s   97.6s    8328814   2.5542  2.3254  0.2287  helpers OK; 68872 pos; wall-time exit; job resubmit fired
