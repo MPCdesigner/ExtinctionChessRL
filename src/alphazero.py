@@ -15,6 +15,7 @@ import random
 import time
 import os
 import json
+import glob
 import subprocess
 from typing import List, Tuple, Optional
 from multiprocessing import Process, Queue
@@ -227,6 +228,215 @@ def cleanup_stale_helper_files(current_iter_num, helper_dir):
                 os.remove(os.path.join(helper_dir, fname))
         except (IndexError, ValueError):
             pass
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Benchmark battery — fire-and-forget test suite for milestone checkpoints
+# ═════════════════════════════════════════════════════════════════════════════
+# After main saves an az_iter_<N>_XXpct.pt at a multiple of 10, main sbatches
+# 13 tests to trpro-slurm2 (RTX 4090) plus one aggregator job. All are
+# non-blocking: main proceeds to iter N+1 immediately. The aggregator runs
+# after all tests complete (--dependency=afterany) and writes a single
+# summary file to ~/extinction-chess/benchmark_results/iter_<N>.txt.
+#
+# The 13 tests:
+#   - 5 recent H2H (vs iter N-10, N-20, N-30, N-40, N-50)
+#   - 5 distant H2H (vs iter N-110, N-120, N-130, N-140, N-150)
+#   - Win-taking multi-model
+#   - Tactical random
+#   - vs iter 100
+# Any test whose reference checkpoint is missing is silently skipped.
+
+# Fixed historical anchors always included in win-taking (in addition to
+# rolling recent + distant sets). Reflects checkpoints known to exist and
+# be interesting for tactical comparison.
+_WIN_TAKING_HISTORICAL_ANCHORS = [560, 550, 540, 520, 500, 480, 340, 100]
+
+
+def _find_checkpoint(iter_num, models_dir):
+    """Return filename (basename, not full path) of az_iter_<N>_XXpct.pt.
+
+    Prefers _100pct.pt if multiple matches exist. Returns None if no
+    checkpoint file for this iter is on disk.
+    """
+    pattern = os.path.join(models_dir, f"az_iter_{iter_num}_*pct.pt")
+    matches = glob.glob(pattern)
+    if not matches:
+        return None
+    for m in matches:
+        if "_100pct.pt" in m:
+            return os.path.basename(m)
+    return os.path.basename(matches[0])
+
+
+def _sbatch_benchmark(iter_dir, log_name, wrap_cmd, gres="gpu:rtx_4090:1",
+                     nodelist="trpro-slurm2", cpus=4, mem="16G", time_limit="4:00:00",
+                     dependency=None):
+    """Submit one benchmark test job. Returns SLURM JOBID or None on failure.
+
+    Fire-and-forget: does NOT wait for the job to reach RUNNING. Main
+    proceeds immediately.
+    """
+    cmd = ["sbatch", "--parsable", "--partition=compute"]
+    if gres:
+        cmd.append(f"--gres={gres}")
+    if nodelist:
+        cmd.append(f"--nodelist={nodelist}")
+    cmd += [
+        f"--cpus-per-task={cpus}",
+        f"--mem={mem}",
+        f"--time={time_limit}",
+        f"--output={os.path.join(iter_dir, log_name)}",
+    ]
+    if dependency:
+        cmd.append(f"--dependency={dependency}")
+    cmd.append(f"--wrap={wrap_cmd}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            print(f"         [benchmark] sbatch failed: {result.stderr.strip()}")
+            return None
+        return int(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
+        print(f"         [benchmark] sbatch error: {e}")
+        return None
+
+
+def launch_benchmark_battery(iter_num, models_dir,
+                             benchmark_dir="~/benchmark_battery",
+                             results_dir="~/extinction-chess/benchmark_results",
+                             aggregator_script="~/extinction-chess/src/aggregate_benchmark.py",
+                             src_cwd="~/extinction-chess/src"):
+    """Sbatch a full benchmark battery for the given iter, non-blocking.
+
+    Called from main's training loop after a milestone checkpoint save
+    (multiples of 10). Main proceeds to iter N+1 immediately after this
+    returns; tests run in background on trpro-slurm2 and results appear
+    in results_dir/iter_<N>.txt when the aggregator completes.
+    """
+    current_ckpt = _find_checkpoint(iter_num, models_dir)
+    if current_ckpt is None:
+        print(f"         [benchmark] iter {iter_num}: no checkpoint file, skipping battery")
+        return
+
+    benchmark_dir = os.path.expanduser(benchmark_dir)
+    results_dir = os.path.expanduser(results_dir)
+    aggregator_script = os.path.expanduser(aggregator_script)
+    src_cwd = os.path.expanduser(src_cwd)
+
+    iter_dir = os.path.join(benchmark_dir, f"iter_{iter_num}")
+    os.makedirs(iter_dir, exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
+
+    print(f"         [benchmark] launching battery for iter {iter_num}")
+
+    def _submit_h2h(opp_iter, kind):
+        """Submit one H2H test. Returns (opp_iter, jobid) or None if skipped."""
+        opp_ckpt = _find_checkpoint(opp_iter, models_dir)
+        if opp_ckpt is None:
+            print(f"         [benchmark] {kind} iter {opp_iter}: no checkpoint, skipping")
+            return None
+        wrap = (
+            "export PYTHONUNBUFFERED=1 && "
+            f"cd {src_cwd} && "
+            "python3 setup.py build_ext --inplace && "
+            f"python3 compare_extensive.py --m1 {opp_ckpt} --m2 {current_ckpt} --device cuda"
+        )
+        log = f"compare_{iter_num}vs{opp_iter}_%j.log"
+        jid = _sbatch_benchmark(iter_dir, log, wrap)
+        if jid is not None:
+            print(f"         [benchmark] {kind} H2H vs iter {opp_iter} → job {jid}")
+        return jid
+
+    job_ids = []
+
+    # 5 recent H2H
+    for opp in [iter_num - 10 * i for i in range(1, 6)]:
+        jid = _submit_h2h(opp, "recent")
+        if jid is not None:
+            job_ids.append(jid)
+
+    # 5 distant H2H
+    for opp in [iter_num - 10 * i for i in range(11, 16)]:
+        jid = _submit_h2h(opp, "distant")
+        if jid is not None:
+            job_ids.append(jid)
+
+    # Win-taking multi-model
+    wt_iters = (
+        [iter_num] +
+        [iter_num - 10 * i for i in range(1, 6)] +
+        [iter_num - 10 * i for i in range(11, 16)] +
+        _WIN_TAKING_HISTORICAL_ANCHORS
+    )
+    wt_models = []
+    for i in wt_iters:
+        if i <= 0:
+            continue
+        f = _find_checkpoint(i, models_dir)
+        if f and f not in wt_models:
+            wt_models.append(f)
+    if wt_models:
+        wrap = (
+            "export PYTHONUNBUFFERED=1 && "
+            f"cd {src_cwd} && "
+            "python3 setup.py build_ext --inplace && "
+            f"python3 bench_win_taking.py --models {' '.join(wt_models)} "
+            "--sims 20 50 100 200 --positions 200 --hard-only --min-distance 5"
+        )
+        jid = _sbatch_benchmark(iter_dir, "bench_win_taking_%j.log", wrap,
+                                time_limit="2:00:00")
+        if jid is not None:
+            job_ids.append(jid)
+            print(f"         [benchmark] win-taking ({len(wt_models)} models) → job {jid}")
+
+    # Tactical random
+    wrap = (
+        "export PYTHONUNBUFFERED=1 && "
+        f"cd {src_cwd} && "
+        "python3 setup.py build_ext --inplace && "
+        f"python3 bench_vs_tactical.py --model {current_ckpt} --device cuda"
+    )
+    jid = _sbatch_benchmark(iter_dir, f"tactical_{iter_num}_%j.log", wrap)
+    if jid is not None:
+        job_ids.append(jid)
+        print(f"         [benchmark] tactical random → job {jid}")
+
+    # vs iter 100
+    ckpt_100 = _find_checkpoint(100, models_dir)
+    if ckpt_100:
+        wrap = (
+            "export PYTHONUNBUFFERED=1 && "
+            f"cd {src_cwd} && "
+            "python3 setup.py build_ext --inplace && "
+            f"python3 compare_extensive.py --m1 {ckpt_100} --m2 {current_ckpt} --device cuda"
+        )
+        jid = _sbatch_benchmark(iter_dir, f"compare_{iter_num}vs100_%j.log", wrap)
+        if jid is not None:
+            job_ids.append(jid)
+            print(f"         [benchmark] vs iter 100 → job {jid}")
+
+    # Aggregator (waits for all tests via --dependency=afterany)
+    if job_ids:
+        dep = "afterany:" + ":".join(str(j) for j in job_ids)
+        results_file = os.path.join(results_dir, f"iter_{iter_num}.txt")
+        wrap = (
+            "export PYTHONUNBUFFERED=1 && "
+            f"python3 {aggregator_script} "
+            f"--iter {iter_num} "
+            f"--iter-dir {iter_dir} "
+            f"--results-file {results_file}"
+        )
+        agg_jid = _sbatch_benchmark(
+            iter_dir, "aggregator_%j.log", wrap,
+            gres=None, nodelist=None, cpus=1, mem="2G",
+            time_limit="00:30:00", dependency=dep,
+        )
+        if agg_jid is not None:
+            print(f"         [benchmark] aggregator → job {agg_jid} "
+                  f"(waits for {len(job_ids)} tests)")
+    else:
+        print(f"         [benchmark] no test jobs launched — skipping aggregator")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1336,6 +1546,17 @@ def train(
     # (handle, output_path). If provided, used instead of SLURM. Lets us
     # plug in Modal, k8s, or any other concurrency backend.
     helper_launcher=None,
+    # ── Benchmark battery (fire-and-forget after milestone checkpoints) ──
+    # When True, after each multiple-of-10 checkpoint save, main sbatches a
+    # 13-test benchmark battery on trpro-slurm2 (RTX 4090). Non-blocking —
+    # main continues to next iter immediately. Aggregator writes a summary
+    # to benchmark_results_dir/iter_<N>.txt when all tests complete.
+    # Only meaningful on the cluster; Modal runs should pass False.
+    benchmark_enabled: bool = False,
+    benchmark_dir: str = "~/benchmark_battery",
+    benchmark_results_dir: str = "~/extinction-chess/benchmark_results",
+    benchmark_aggregator_script: str = "~/extinction-chess/src/aggregate_benchmark.py",
+    benchmark_src_cwd: str = "~/extinction-chess/src",
 ):
     job_start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1763,6 +1984,18 @@ def train(
                     os.path.join(models_dir, "az_best.pt"),
                     iteration=iter_num, win_rate=wr)
                 print(f"         ★ new best: {wr:.1%}")
+
+            if benchmark_enabled:
+                try:
+                    launch_benchmark_battery(
+                        iter_num, models_dir,
+                        benchmark_dir=benchmark_dir,
+                        results_dir=benchmark_results_dir,
+                        aggregator_script=benchmark_aggregator_script,
+                        src_cwd=benchmark_src_cwd,
+                    )
+                except Exception as e:
+                    print(f"         [benchmark] battery launch failed: {e}")
 
     # Final save
     model.eval()
