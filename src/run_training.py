@@ -36,4 +36,9 @@ if __name__ == "__main__":
         helper_primary_node="delta-slurm1",
         helper_fallback_gres="gpu:rtx_3090:1",
         helper_fallback_node="trpro-slurm1",
+        # ── Benchmark battery ──
+        # Fires 13 tests + aggregator on trpro-slurm2 after each ×10 iter save.
+        # Non-blocking: main continues immediately, summary appears ~5-6h later
+        # in ~/extinction-chess/benchmark_results/iter_<N>.txt.
+        benchmark_enabled=True,
     )
