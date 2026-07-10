@@ -3,7 +3,7 @@
 #SBATCH --partition=compute
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=02:00:00
+#SBATCH --time=02:45:00
 #SBATCH --output=/home/h74liang/helper_%j.log
 
 # Helper SLURM script — spawned by main training at the start of each iter.
