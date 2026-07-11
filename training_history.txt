@@ -753,3 +753,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  756  204  195   1    11601    400   10969.9s   97.3s    8693417   2.5425  2.3081  0.2344  helpers OK; 69115 pos; loss BOUNCED BACK when helpers returned
  757  194  204   2    11599    400   11050.3s   96.1s    8706551   2.5456  2.3126  0.2330  helpers OK; 68475 pos
  758  197  202   1    11110    400   10450.8s   97.6s    8328814   2.5542  2.3254  0.2287  helpers OK; 68872 pos; wall-time exit; job resubmit fired
+ 759  184  215   1    11757    400   11251.9s   97.0s    8816341   2.5593  2.3166  0.2427  helpers OK; 69168 pos; 3rd LR=0.00005 job starts
+ 760  178  219   3    11997    400   11615.0s   98.7s    9025229   2.5608  2.3250  0.2357  ★ new best 100% vs random; helpers OK; extensive benchmark ran on this checkpoint
+ 761  211  189   0    12337    400   11824.0s   99.9s    9269329   2.5738  2.3365  0.2373  helpers OK; 70855 pos
+ 762  194  204   2    11241    400   10406.4s   98.0s    8428145   2.5380  2.3094  0.2286  helpers OK; 70024 pos
+ 763  222  177   1    11643    400   10980.6s   99.8s    8731923   2.5458  2.3180  0.2278  helpers OK; big W>B (222-177); 71005 pos
+ 764  193  206   1    11315    400   10586.4s   99.5s    8485099   2.5645  2.3298  0.2348  helpers OK; 70407 pos
+ 765  195  205   0    11317    400   10596.4s   96.7s    8458253   2.5774  2.3365  0.2409  helpers OK; 68916 pos; wall-time exit; last iter before auto-benchmark automation active
