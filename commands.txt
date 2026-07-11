@@ -41,6 +41,22 @@ Example (iter 240):
 Upload a file to cluster:
   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/src/FILENAME" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
 
+  CRITICAL: run_training.py MUST go to ~/extinction-chess/src/ (NOT
+  ~/extinction-chess/). train.sh does `cd ~/extinction-chess/src` then
+  `python3 run_training.py`, so Python loads it from src/. There is an
+  orphaned copy at ~/extinction-chess/run_training.py that is NEVER
+  executed but IS what a naive grep will find first — do not trust it.
+
+  After any SCP, verify against the RUNTIME path, not the SCP target:
+    grep -E "<expected content>" ~/extinction-chess/src/run_training.py
+  Or check all copies at once:
+    find ~/extinction-chess -name run_training.py -exec grep -H "<expected>" {} \;
+
+  Same trap applies to any file that has multiple copies. Always check
+  what train.sh (or the equivalent runner) actually executes:
+    cat ~/extinction-chess/train.sh
+    cat ~/extinction-chess/helper.sh
+
 == RUN TOURNAMENT (local, from src/) ==
 
 Run new models only:
