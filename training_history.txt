@@ -760,3 +760,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  763  222  177   1    11643    400   10980.6s   99.8s    8731923   2.5458  2.3180  0.2278  helpers OK; big W>B (222-177); 71005 pos
  764  193  206   1    11315    400   10586.4s   99.5s    8485099   2.5645  2.3298  0.2348  helpers OK; 70407 pos
  765  195  205   0    11317    400   10596.4s   96.7s    8458253   2.5774  2.3365  0.2409  helpers OK; 68916 pos; wall-time exit; last iter before auto-benchmark automation active
+ 766  167  232   1    10604    200   10001.6s   86.6s    7920636   2.4996  2.2810  0.2186  helper id1 missing; +200 games only; heavy B skew (232-167); 61855 pos
+ 767  203  196   1    11172      0   10534.9s   79.0s    8357508   2.4579  2.2611  0.1968  BOTH helpers missing; no helper data; artifact-low losses
+ 768  193  207   0    10527    400    9858.9s   93.0s    7900375   2.5555  2.3185  0.2370  helpers OK; 66392 pos; loss bounced back with helpers
+ 769  195  204   1    11368    400   10813.0s   94.1s    8529048   2.5716  2.3275  0.2441  helpers OK; 66560 pos
+ 770  220  179   1    11817    400   11354.9s   94.4s    8884473   2.5639  2.3212  0.2427  ★ new best 100% vs random; helpers OK; big W>B (220-179); auto-benchmark SHOULD have triggered but SCP-path bug meant it didn't
+ 771  205  195   0    11197    400   10581.4s   95.0s    8394957   2.5514  2.3151  0.2364  helpers OK; 67792 pos
+ 772  190  208   2    11371    400   10618.6s   94.8s    8504459   2.5523  2.3140  0.2383  helpers OK; 67667 pos; wall-time exit; last iter under FAKE LR=0.00005 (was still 0.00002 due to SCP-path bug)
