@@ -767,3 +767,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  770  220  179   1    11817    400   11354.9s   94.4s    8884473   2.5639  2.3212  0.2427  ★ new best 100% vs random; helpers OK; big W>B (220-179); auto-benchmark SHOULD have triggered but SCP-path bug meant it didn't
  771  205  195   0    11197    400   10581.4s   95.0s    8394957   2.5514  2.3151  0.2364  helpers OK; 67792 pos
  772  190  208   2    11371    400   10618.6s   94.8s    8504459   2.5523  2.3140  0.2383  helpers OK; 67667 pos; wall-time exit; last iter under FAKE LR=0.00005 (was still 0.00002 due to SCP-path bug)
+ 773  183  216   1    11108    400   10704.0s   96.0s    8324868   2.6278  2.3973  0.2305  FIRST iter with REAL LR=0.00005; total/policy loss jumped (destabilization); B heavy
+ 774  183  217   0    11371    400   11397.6s   95.1s    8531755   2.6266  2.3997  0.2269  helpers OK; still elevated loss; B heavy (217-183)
+ 775  201  198   1    11005    400   10485.5s   94.6s    8248549   2.6036  2.3845  0.2192  helpers OK; loss coming down; W~B
+ 776  178  222   0    11586    400   11030.5s   97.4s    8675946   2.6696  2.4336  0.2359  helpers OK; HEAVY B skew (222-178); highest loss of stretch
+ 777  192  208   0    10116    200    9790.7s   84.8s    7545900   2.5360  2.3315  0.2045  helper id1 missing (+200); value loss low but artifact
+ 778  192  208   0    10846    200   10364.3s   84.3s    8109998   2.5428  2.3380  0.2048  helper id1 missing (+200); value loss low but artifact
+ 779  194  206   0    10514    400   10015.6s   91.2s    7849082   2.5971  2.3771  0.2200  helpers OK; wall-time exit; policy loss (2.377) still elevated vs LR=0.00002 era (~2.31)
