@@ -774,3 +774,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  777  192  208   0    10116    200    9790.7s   84.8s    7545900   2.5360  2.3315  0.2045  helper id1 missing (+200); value loss low but artifact
  778  192  208   0    10846    200   10364.3s   84.3s    8109998   2.5428  2.3380  0.2048  helper id1 missing (+200); value loss low but artifact
  779  194  206   0    10514    400   10015.6s   91.2s    7849082   2.5971  2.3771  0.2200  helpers OK; wall-time exit; policy loss (2.377) still elevated vs LR=0.00002 era (~2.31)
+ 780  209  191   0    11005    400   10469.1s   90.7s    8231997   2.5877  2.3654  0.2223  ★ new best 100%; W>B; FIRST AUTO-BENCHMARK FIRED SUCCESSFULLY (13 tests + aggregator) — iter_780.txt written
+ 781  185  213   2    11404    400   10907.0s   90.9s    8557492   2.6350  2.4114  0.2236  helpers OK; B>W (28-point skew); policy loss highest of stretch
+ 782  199  200   1    11240    400   10798.3s   94.1s    8425080   2.6033  2.3898  0.2135  helpers OK; 66786 pos; policy loss coming down
+ 783  197  201   2    11244    200   10933.6s   85.5s    8413804   2.5554  2.3573  0.1981  helper id1 missing (+200 games only); value loss artifact-low
+ 784  194  205   1    11630    400   11371.7s   95.6s    8715078   2.5982  2.3886  0.2096  helpers OK; 68123 pos
+ 785  203  195   2    11320    400   11201.6s   96.2s    8478320   2.5942  2.3904  0.2038  helpers OK; 68113 pos
+ 786  217  183   0    11503    400   11193.3s   95.7s    8628383   2.5915  2.3847  0.2067  helpers OK; W>B (217-183, 34-point W skew); wall-time exit
