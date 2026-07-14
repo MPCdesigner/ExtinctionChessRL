@@ -8,7 +8,7 @@ if __name__ == "__main__":
         iterations=100,
         games_per_iteration=400,
         num_simulations=800,
-        learning_rate=0.00005,  # bumped Jul 7 from 0.00002 to break iter 700-740 H2H plateau
+        learning_rate=0.00002,  # reverted Jul 14 from 0.00005: iter 790 benchmark showed LR bump caused Phase-13-lite damage (win-taking @200: 94%→87%; tactical @400: 95%→80%) while H2H stalled at 0% progress vs iter 780
         models_dir="../models",
         resume=True,
         num_workers=4,
@@ -18,7 +18,7 @@ if __name__ == "__main__":
         max_wall_time=23 * 3600,  # Exit cleanly before 24h SLURM limit
         num_epochs=3,  # reduced from 10; with K=5 buffer, each position seen 15x over its lifetime
         drilling_epochs=5,
-        drilling_lr_factor=0.2,  # adjusted from 0.5 so drilling LR stays at 0.00001 despite main LR bump
+        drilling_lr_factor=0.5,  # reverted Jul 14 from 0.2 (was compensation for the LR bump that we're now undoing)
         extra_hard_epochs=5,
         extra_hard_lr_factor=0.025,
         replay_buffer_dir="../replay_buffer",
