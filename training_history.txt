@@ -781,3 +781,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  784  194  205   1    11630    400   11371.7s   95.6s    8715078   2.5982  2.3886  0.2096  helpers OK; 68123 pos
  785  203  195   2    11320    400   11201.6s   96.2s    8478320   2.5942  2.3904  0.2038  helpers OK; 68113 pos
  786  217  183   0    11503    400   11193.3s   95.7s    8628383   2.5915  2.3847  0.2067  helpers OK; W>B (217-183, 34-point W skew); wall-time exit
+ 787  204  196   0    11202    400   10706.0s   95.0s    8394090   2.5661  2.3566  0.2095  helpers OK; W>B; 68056 pos
+ 788  210  190   0    11394    400   10977.6s   96.5s    8541602   2.5865  2.3798  0.2066  helpers OK; W>B; 68428 pos
+ 789  190  210   0    11876    400   11466.7s   96.4s    8904444   2.5923  2.3863  0.2060  helpers OK; B>W; 68803 pos
+ 790  215  184   1    11778    200   11484.1s   89.5s    8819562   2.5469  2.3576  0.1893  ★ new best 100%; helper id1 missing (+200 games only); AUTO-BENCHMARK FIRED (iter_790.txt written) — showed LR bump FAILED (iter 790 vs 780 tied; win-taking @200 regressed 94%→87%)
+ 791  212  188   0    12100      0   11752.5s   82.4s    9052244   2.4863  2.3121  0.1742  BOTH helpers missing; no helper data; artifact-low losses
+ 792  193  207   0    11745    400   11508.5s   99.5s    8802129   2.5733  2.3757  0.1976  helpers OK; B>W; 70331 pos
+ 793  212  188   0    11742    200   11235.2s   91.0s    8810542   2.5309  2.3479  0.1830  helper id1 missing (+200 games only); wall-time exit; last iter with LR=0.00005 in cached Python
