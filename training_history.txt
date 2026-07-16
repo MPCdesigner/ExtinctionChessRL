@@ -795,3 +795,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  798  226  174   0    10838      0   10434.2s   78.2s    8101662   2.4851  2.3074  0.1777  NO HELPERS; HUGE W>B skew (226-174, 52 points!); drain persists
  799  186  214   0    11290      0   10952.3s   79.8s    8450570   2.4966  2.3175  0.1791  NO HELPERS; B>W; drain persists
  800  206  193   1    11785      0   11355.5s   78.7s    8826033   2.5083  2.3288  0.1796  ★ new best 98% vs random (FIRST sub-100% since iter 690!); NO HELPERS; THIRD AUTO-BENCHMARK fired but confounded by helper drought
+ 801  222  178   0    10600      0   10148.9s   77.5s    7929432   2.4995  2.3001  0.1993  FIRST iter with REAL LR=0.00002 revert; NO HELPERS (drain persists); big W>B skew (222-178)
+ 802  201  198   1    11352      0   10904.6s   78.0s    8509136   2.4996  2.3103  0.1894  NO HELPERS; W~B; policy loss dropping vs LR=0.00005 era
+ 803  226  174   0    11668      0   11253.8s   79.2s    8733804   2.4951  2.3104  0.1846  NO HELPERS; HUGE W>B (226-174, 52-point skew)
+ 804  226  174   0    11486      0   11098.5s   79.5s    8621398   2.4923  2.3079  0.1844  NO HELPERS; HUGE W>B (226-174 again)
+ 805  209  189   2    11436      0   11178.0s   79.0s    8569356   2.4887  2.3044  0.1843  NO HELPERS; W>B moderate
+ 806  205  195   0    11121      0   10943.3s   80.1s    8338697   2.4700  2.2894  0.1806  NO HELPERS; lowest total loss (2.470); policy loss down to 2.289
+ 807  206  194   0    11468      0   11493.1s   80.5s    8606468   2.4745  2.2881  0.1864  NO HELPERS; wall-time exit; last iter before iter 810 milestone
