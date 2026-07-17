@@ -170,10 +170,127 @@ or from squeue -u h74liang.
   - Smoke test for trpro-slurm2 before using (in case it goes down again):
     sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=2 --mem=8G --time=00:05:00 --nodelist=trpro-slurm2 --output=$HOME/smoke_4090_%j.log --wrap="python3 -c 'import torch; assert torch.cuda.is_available(); t = torch.randn(1000,1000, device=\"cuda\"); print(\"OK:\", t.sum().item())'"
 
+== AUTO-BENCHMARK BATTERY (fires automatically on every ×10 checkpoint) ==
+
+After every multiple-of-10 iter save, main automatically launches 13 test
+jobs + 1 aggregator on trpro-slurm2. Non-blocking — main continues to next
+iter immediately. Aggregator runs after all tests complete (5-6h later)
+and writes a single human-readable summary file.
+
+Controlled by benchmark_enabled=True in ~/extinction-chess/src/run_training.py
+(inside the train(...) call). See memory: benchmark_automation.
+
+--- What runs ---
+  1. 5 recent H2H tests (vs iter N-10, N-20, N-30, N-40, N-50)
+  2. 5 distant H2H tests (vs iter N-110, N-120, N-130, N-140, N-150)
+  3. Win-taking multi-model (recent + distant + fixed anchors 560,550,540,
+     520,500,480,340,100)
+  4. Tactical random test
+  5. vs iter 100 baseline H2H
+  6. Aggregator (sbatched with --dependency=afterany on all 13 tests)
+
+Missing reference checkpoints are silently skipped.
+
+--- View the aggregated summary ---
+
+  cat ~/extinction-chess/benchmark_results/iter_<N>.txt
+
+  # For example, for iter 780:
+  cat ~/extinction-chess/benchmark_results/iter_780.txt
+
+Summary format is a concatenation of each test's own end-of-log block, with
+section headers "[i/13] category: subject (job JOBID)". Matches exactly what
+raw tests print, so it's readable without regex parsing.
+
+--- View a specific test's raw log ---
+
+  # Individual per-test logs live in a sub-directory per iter:
+  ls ~/benchmark_battery/iter_<N>/
+
+  # Contents include:
+  #   compare_<N>vs<opp>_<jobid>.log    (10 H2H logs, one per opponent)
+  #   bench_win_taking_<jobid>.log      (win-taking log)
+  #   tactical_<N>_<jobid>.log          (tactical random)
+  #   compare_<N>vs100_<jobid>.log      (vs iter 100)
+  #   aggregator_<jobid>.log            (aggregator's own log)
+
+  tail -30 ~/benchmark_battery/iter_780/compare_780vs720_XXXXX.log
+
+--- Verify a battery fired for a given iter ---
+
+  # 1. Look for the "[benchmark]" lines in main's log around iter N:
+  grep -A 20 "\[iter <N>\]" ~/train_<jobid>.log
+
+  # Expected: 14 "[benchmark]" lines after the "★ new best" line —
+  # one per test job launched, plus aggregator.
+
+  # 2. Verify the summary file exists (appears ~5-6h after iter save):
+  ls -la ~/extinction-chess/benchmark_results/iter_<N>.txt
+
+  # 3. If not there yet, check remaining test jobs still running:
+  squeue -u h74liang | grep trpro-slurm2
+
+--- Rolling-window model list (recent + distant) ---
+
+At iter N, the recent-5 opponents are iter N-10 through N-50, and the
+distant-5 are iter N-110 through N-150. The lists shift by 10 for each
+new benchmark. Win-taking always includes these 10 rolling opponents PLUS
+the fixed anchors 560,550,540,520,500,480,340,100. Fixed anchors let us
+compare current strength against historically-important checkpoints
+without them being "aged out" of the rolling window.
+
+--- Interpretation cheat sheet ---
+
+  H2H % > 55%      → new checkpoint clearly stronger than opponent
+  H2H % ~ 50%      → tied within noise (200 games has ±7% CI)
+  H2H % < 45%      → new checkpoint clearly weaker (regression)
+
+  Win-taking       → tactical acuity metric. iter 500-560 tops it due to
+                     Phase-13 drilling artifact. NEVER use in isolation.
+
+  Tactical random  → general play metric. Complements win-taking.
+
+  vs iter 100      → baseline sanity check. Should be 65%+ for any
+                     mature checkpoint.
+
+--- Enable / disable ---
+
+  # Check current state:
+  grep benchmark_enabled ~/extinction-chess/src/run_training.py
+  # (must be in ~/extinction-chess/src/ NOT ~/extinction-chess/ — see the
+  # "Upload a file to cluster" section above for the path trap)
+
+  # To disable temporarily: edit the file, set to False, SCP to src/,
+  # takes effect at next auto-resubmit.
+
+
+== POSITIONAL EVALUATION TOOL (local, pygame) ==
+
+Local tool for inspecting how specific models evaluate specific positions.
+Complements the aggregate benchmark battery — battery gives statistics,
+this gives per-position insight.
+
+  cd "c:\Users\henry\Desktop\Extinction Chess RL"
+  python -m tools.positional_eval
+
+Startup opens a tkinter file picker — multi-select model .pt files from
+models/. Once loaded, main window opens with:
+  - Board (left)
+  - Palette (only in construction mode)
+  - Model columns (right)
+  - Settings overlay (max sims + which models to include)
+
+Values are displayed in WHITE'S perspective: +1 = White winning, -1 =
+Black winning. Does NOT flip with whose turn it is (internally the model
+outputs current-player-perspective; the tool converts).
+
+See memory: positional_eval_tool for full details.
+
+
 == GPU NOTES ==
 
 delta-slurm1  (RTX 2080 Ti) — main training home
 trpro-slurm1  (RTX 3090)    — helper node (do NOT run tests here during training)
-trpro-slurm2  (RTX 4090)    — PREFERRED for tests (isolated from training). Verified Jul 7.
+trpro-slurm2  (RTX 4090)    — PREFERRED for tests + auto-benchmark node
 tr-slurm2     (GTX 1080)    — drain + CUDA errors
 wato2-slurm1  (RTX 2080 Ti) — down
