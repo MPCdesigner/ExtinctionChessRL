@@ -802,3 +802,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  805  209  189   2    11436      0   11178.0s   79.0s    8569356   2.4887  2.3044  0.1843  NO HELPERS; W>B moderate
  806  205  195   0    11121      0   10943.3s   80.1s    8338697   2.4700  2.2894  0.1806  NO HELPERS; lowest total loss (2.470); policy loss down to 2.289
  807  206  194   0    11468      0   11493.1s   80.5s    8606468   2.4745  2.2881  0.1864  NO HELPERS; wall-time exit; last iter before iter 810 milestone
+ 808  207  193   0    11541      0   11158.0s   80.9s    8665237   2.4814  2.2829  0.1985  NO HELPERS (drain persists day 4); 57052 pos
+ 809  184  216   0    11846      0   11413.2s   80.2s    8891558   2.4837  2.2914  0.1923  NO HELPERS; B>W
+ 810  221  176   3    12274      0   11755.6s   83.5s    9228714   2.4829  2.2895  0.1934  ★ new best 100%; AUTO-BENCHMARK fired (iter_810.txt) — mixed results, likely spike-and-return; W>B (221-176)
+ 811  228  171   1    11751      0   11172.9s   83.1s    8799255   2.4723  2.2859  0.1863  NO HELPERS; HUGE W>B (228-171, 57-point skew); style bias emerging
+ 812  197  200   3    12194      0   11675.4s   85.0s    9152122   2.4715  2.2849  0.1866  NO HELPERS; balanced W~B
+ 813  199  200   1    11736      0   11230.5s   85.2s    8799160   2.4641  2.2795  0.1846  NO HELPERS; balanced
+ 814  216  183   1    11305      0   10631.9s   83.2s    8488945   2.4554  2.2691  0.1863  NO HELPERS; W>B moderate; lowest total (2.455) and policy loss (2.269) of stretch; wall-time exit
