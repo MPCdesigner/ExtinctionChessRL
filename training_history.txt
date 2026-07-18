@@ -809,3 +809,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  812  197  200   3    12194      0   11675.4s   85.0s    9152122   2.4715  2.2849  0.1866  NO HELPERS; balanced W~B
  813  199  200   1    11736      0   11230.5s   85.2s    8799160   2.4641  2.2795  0.1846  NO HELPERS; balanced
  814  216  183   1    11305      0   10631.9s   83.2s    8488945   2.4554  2.2691  0.1863  NO HELPERS; W>B moderate; lowest total (2.455) and policy loss (2.269) of stretch; wall-time exit
+ 815  192  207   1    10854      0   10179.5s   81.7s    8128214   2.4521  2.2572  0.1949  NO HELPERS (drain day 5); B>W
+ 816  212  188   0    11678      0   11134.1s   80.7s    8756638   2.4571  2.2657  0.1914  NO HELPERS; W>B moderate
+ 817  209  191   0    11049      0   10552.5s   80.9s    8268313   2.4518  2.2636  0.1882  NO HELPERS
+ 818  211  188   1    11786      0   11530.1s   81.1s    8831522   2.4532  2.2621  0.1911  NO HELPERS
+ 819  182  218   0    10998      0   10776.8s   79.5s    8249646   2.4426  2.2539  0.1887  NO HELPERS; B>W; lowest total (2.443) and policy (2.254) of stretch
+ 820  201  199   0    11955      0   11627.6s   80.5s    8953259   2.4503  2.2660  0.1843  ★ new best 100%; AUTO-BENCHMARK fired (iter_820.txt); PERFECTLY BALANCED W~B (201-199) — no style skew this iter
+ 821  212  188   0    11798      0   11986.0s   82.7s    8854646   2.4592  2.2731  0.1862  NO HELPERS; W>B moderate; wall-time exit
