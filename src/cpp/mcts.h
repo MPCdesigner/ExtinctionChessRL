@@ -31,11 +31,12 @@ struct MCTSNode {
     int     visit_count;
     float   value_sum;       // cumulative value from WHITE's perspective
     bool    is_expanded;
+    int     virtual_loss;    // transient loss during batched selection
 
     MCTSNode()
         : parent(-1), first_child(-1), num_children(0),
           prior(1.0f), visit_count(0), value_sum(0.0f),
-          is_expanded(false) {}
+          is_expanded(false), virtual_loss(0) {}
 };
 
 // ── MCTS Search ───────────────────────────────────────────────────────────
@@ -92,6 +93,8 @@ private:
     int  select_child(int node_idx) const;
     void backpropagate(int node_idx, float white_value);
     float terminal_value(const Game& g) const;
+    void add_virtual_loss(int node_idx);
+    void remove_virtual_loss(int node_idx);
 
     // Tactical shortcuts
     struct TacticalResult {

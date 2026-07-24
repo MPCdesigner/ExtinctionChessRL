@@ -108,23 +108,29 @@ int MCTS::select_child(int node_idx) const {
     int best = -1;
     float best_score = -1e9f;
 
-    float parent_vc = static_cast<float>(node.visit_count);
+    // Include virtual loss in parent's effective count for exploration term
+    float parent_vc = static_cast<float>(node.visit_count + node.virtual_loss);
     float sqrt_parent = std::sqrt(parent_vc);
 
     for (int i = 0; i < node.num_children; i++) {
         int ci = node.first_child + i;
         const MCTSNode& child = nodes_[ci];
 
+        // Include virtual loss in child's effective count. Virtual loss is
+        // subtracted from value_sum so busy children look worse for the parent.
+        int child_total = child.visit_count + child.virtual_loss;
+
         float q;
-        if (child.visit_count == 0) {
+        if (child_total == 0) {
             q = 0.0f;
         } else {
-            float wq = child.value_sum / static_cast<float>(child.visit_count);
+            float wq = (child.value_sum - static_cast<float>(child.virtual_loss))
+                     / static_cast<float>(child_total);
             // q is from parent's perspective
             q = (node.game.side == WHITE) ? wq : -wq;
         }
 
-        float u = c_puct_ * child.prior * sqrt_parent / (1.0f + child.visit_count);
+        float u = c_puct_ * child.prior * sqrt_parent / (1.0f + child_total);
         float score = q + u;
 
         if (score > best_score) {
@@ -144,7 +150,28 @@ void MCTS::backpropagate(int node_idx, float white_value) {
     }
 }
 
+void MCTS::add_virtual_loss(int node_idx) {
+    int idx = node_idx;
+    while (idx >= 0) {
+        nodes_[idx].virtual_loss++;
+        idx = nodes_[idx].parent;
+    }
+}
+
+void MCTS::remove_virtual_loss(int node_idx) {
+    int idx = node_idx;
+    while (idx >= 0) {
+        nodes_[idx].virtual_loss--;
+        idx = nodes_[idx].parent;
+    }
+}
+
 void MCTS::expand_node(int node_idx, const float* policy_logits) {
+    // Guard against double-expansion. With virtual loss now added at selection
+    // time, this should be rare, but keep as defensive check to prevent
+    // duplicated children (which would corrupt tree stats).
+    if (nodes_[node_idx].is_expanded) return;
+
     // Get legal moves and game state BEFORE any reallocation
     auto legal = nodes_[node_idx].game.legal_moves();
 
@@ -332,10 +359,15 @@ int MCTS::select_leaves(float* out_boards) {
             node.game.encode_board(dst);
             leaves_collected++;
         }
+
+        // Add virtual loss so subsequent sims in this batch explore
+        // different branches (they'll see this node as busy).
+        add_virtual_loss(node_idx);
     }
 
-    // Handle terminals immediately
+    // Handle terminals immediately (remove VL first, then real backprop)
     for (auto& [idx, val] : pending_terminals_) {
+        remove_virtual_loss(idx);
         backpropagate(idx, val);
         sims_done_++;
     }
@@ -349,9 +381,8 @@ void MCTS::process_results(const float* policies, const float* values, int num_l
         const float* policy = policies + i * POLICY_SIZE;
         float value = values[i];
 
-        // Expand node with policy priors
-        // Note: node_idx might have shifted if expand_node caused reallocation
-        // We need to be careful here — expand_node appends to nodes_
+        // Expand node with policy priors (guarded against double-expansion
+        // inside expand_node itself)
         expand_node(node_idx, policy);
 
         // Value is from current player's perspective, convert to white's
@@ -362,6 +393,8 @@ void MCTS::process_results(const float* policies, const float* values, int num_l
             white_value = -value;
         }
 
+        // Remove virtual loss (added during select_leaves), then backprop real value
+        remove_virtual_loss(node_idx);
         backpropagate(node_idx, white_value);
         sims_done_++;
     }
