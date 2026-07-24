@@ -857,6 +857,38 @@ def _backpropagate(node, white_value):
         node = node.parent
 
 
+def descend_root(prev_root, moves):
+    """Walk down prev_root along a sequence of played moves.
+
+    Used by callers of mcts_search(return_root=True) to locate the subtree
+    corresponding to the current game position, so they can pass it back as
+    prev_root for subtree reuse.
+
+    Args:
+        prev_root: MCTSNode returned by an earlier mcts_search(return_root=True) call.
+        moves: iterable of Move objects representing the moves played since
+               prev_root was returned. For self-play (one model both sides),
+               this is 1 ply (own move). For H2H between different models,
+               this is 2 plies (own move + opponent's response).
+
+    Returns:
+        MCTSNode representing the current position (already expanded, with
+        visits > 0), suitable for reuse; or None if the tree can't be
+        traversed (move not in tree, node unexpanded, or unvisited).
+    """
+    node = prev_root
+    for m in moves:
+        found = None
+        for child in node.children:
+            if child.move == m:
+                found = child
+                break
+        if found is None or not found.is_expanded or found.visit_count == 0:
+            return None
+        node = found
+    return node
+
+
 BATCH_SIZE_MCTS = 8  # Number of leaves to collect before batched eval
 
 # Try to import C++ MCTS and batched self-play
@@ -935,7 +967,9 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
                 tactical_shortcuts: bool = True,
                 progress_callback=None,
                 checkpoint_sims=None,
-                checkpoint_callback=None):
+                checkpoint_callback=None,
+                prev_root=None,
+                return_root=False):
     """
     AlphaZero-style MCTS with batched neural network evaluation.
     Collects multiple leaves via virtual loss, evaluates in one GPU call.
@@ -957,58 +991,126 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     instead of running MCTS from scratch for each sim setting.
 
     Kept out of the hot path when None (checked once per batch).
+
+    prev_root: optional MCTSNode from an earlier mcts_search(return_root=True)
+    call, already promoted by the caller (see descend_root). If provided and
+    valid (expanded, has children), it's used as the root and its existing
+    visits are preserved — only (num_simulations - prev_root.visit_count)
+    additional sims are run. Tactical shortcut is skipped (we've already
+    committed to this subtree). Falls back to fresh MCTS if prev_root
+    isn't usable.
+
+    return_root: if True, returns (move_visits, root_value, root) so caller
+    can pass root back as prev_root next call. Default False for backward
+    compatibility with existing callers.
     """
-    root = MCTSNode(game)
-
-    # Expand root with policy priors (single eval)
-    legal = game.get_legal_moves()
-    if not legal:
-        return [], 0.0
-
-    # Tactical shortcut: force instant wins (but allow blunders)
     current = game.current_player
-    if tactical_shortcuts:
-        winning_moves = []
-        for m in legal:
-            gc = _copy_game(game)
-            if not gc.make_move(m):
-                continue
-            if gc.game_over and gc.winner == current:
-                winning_moves.append(m)
-        if winning_moves:
-            num_winners = len(winning_moves)
-            per_move = num_simulations // num_winners
-            remainder = num_simulations % num_winners
-            result = []
-            win_idx = 0
+
+    # Check if we can reuse the previous root's subtree
+    can_reuse = (prev_root is not None
+                 and prev_root.is_expanded
+                 and len(prev_root.children) > 0
+                 and prev_root.visit_count > 0)
+
+    if can_reuse:
+        # ── REUSE PATH ──
+        root = prev_root
+        root.parent = None
+        sims_done = root.visit_count
+
+        # Root value from existing search state
+        white_q = root.value_sum / root.visit_count
+        root_value = white_q if current == Color.WHITE else -white_q
+
+        # Add fresh Dirichlet noise to root's children priors (skipped for
+        # deterministic paths like benchmarks where noise_weight=0)
+        if dirichlet_alpha > 0 and noise_weight > 0:
+            noise = np.random.dirichlet([dirichlet_alpha] * len(root.children))
+            for child, n in zip(root.children, noise):
+                child.prior = (1 - noise_weight) * child.prior + noise_weight * n
+
+        # Skip the sim loop entirely if we already have enough visits
+        if sims_done >= num_simulations:
+            move_visits = [(ch.move, ch.visit_count) for ch in root.children]
+            if return_root:
+                return move_visits, root_value, root
+            return move_visits, root_value
+
+        # Skip the fresh-init block below and jump straight into the sim loop
+        # (structured via a marker; see below)
+        _skip_fresh_init = True
+    else:
+        _skip_fresh_init = False
+        root = MCTSNode(game)
+        sims_done = 0
+
+    if not _skip_fresh_init:
+        # ── FRESH PATH ──
+        # Expand root with policy priors (single eval)
+        legal = game.get_legal_moves()
+        if not legal:
+            if return_root:
+                return [], 0.0, root
+            return [], 0.0
+
+        # Tactical shortcut: force instant wins (but allow blunders)
+        if tactical_shortcuts:
+            winning_moves = []
             for m in legal:
-                if m in winning_moves:
-                    result.append((m, per_move + (1 if win_idx < remainder else 0)))
-                    win_idx += 1
-                else:
-                    result.append((m, 0))
-            return result, 1.0
+                gc = _copy_game(game)
+                if not gc.make_move(m):
+                    continue
+                if gc.game_over and gc.winner == current:
+                    winning_moves.append(m)
+            if winning_moves:
+                num_winners = len(winning_moves)
+                per_move = num_simulations // num_winners
+                remainder = num_simulations % num_winners
+                result = []
+                win_idx = 0
+                for m in legal:
+                    if m in winning_moves:
+                        result.append((m, per_move + (1 if win_idx < remainder else 0)))
+                        win_idx += 1
+                    else:
+                        result.append((m, 0))
+                if return_root:
+                    return result, 1.0, root
+                return result, 1.0
 
-    policy_logits, root_value = evaluator.evaluate_with_policy(game)
+        policy_logits, root_value = evaluator.evaluate_with_policy(game)
 
-    move_indices = [move_to_index(m) for m in legal]
-    move_logits = np.array([policy_logits[i] for i in move_indices])
-    move_logits -= move_logits.max()
-    probs = np.exp(move_logits)
-    probs /= probs.sum() + 1e-8
+        move_indices = [move_to_index(m) for m in legal]
+        move_logits = np.array([policy_logits[i] for i in move_indices])
+        move_logits -= move_logits.max()
+        probs = np.exp(move_logits)
+        probs /= probs.sum() + 1e-8
 
-    if dirichlet_alpha > 0 and noise_weight > 0:
-        noise = np.random.dirichlet([dirichlet_alpha] * len(legal))
-        probs = (1 - noise_weight) * probs + noise_weight * noise
+        if dirichlet_alpha > 0 and noise_weight > 0:
+            noise = np.random.dirichlet([dirichlet_alpha] * len(legal))
+            probs = (1 - noise_weight) * probs + noise_weight * noise
 
-    for m, p in zip(legal, probs):
-        gc = _copy_game(game)
-        if gc.make_move(m):
-            root.children.append(MCTSNode(gc, parent=root, move=m, prior=p))
-    root.is_expanded = True
+        for m, p in zip(legal, probs):
+            gc = _copy_game(game)
+            if gc.make_move(m):
+                root.children.append(MCTSNode(gc, parent=root, move=m, prior=p))
+        root.is_expanded = True
 
-    if not root.children:
-        return [], root_value
+        if not root.children:
+            if return_root:
+                return [], root_value, root
+            return [], root_value
+
+        # Account for the initial NN eval as a sim. This matches reuse
+        # semantics where the promoted node's visit_count already includes
+        # the initial leaf visit from the old search. Without this, fresh's
+        # first-sim UCB would use sqrt(0) (breaking ties by iteration order)
+        # while reuse would use sqrt(N_prev) (breaking by prior). See
+        # docstring for prev_root.
+        white_root_value = root_value if current == Color.WHITE else -root_value
+        root.visit_count = 1
+        root.value_sum = white_root_value
+        sims_done = 1
 
     # Precompute sorted checkpoint list (mutated in the loop as they fire)
     if checkpoint_callback is not None and checkpoint_sims:
@@ -1018,7 +1120,8 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
         _remaining_checkpoints = []
 
     # Run simulations in batches
-    sims_done = 0
+    # (sims_done is preserved from either fresh init (0) or reuse init
+    # (existing visit_count), so the loop runs only the remaining sims)
     while sims_done < num_simulations:
         batch_size = min(BATCH_SIZE_MCTS, num_simulations - sims_done)
         leaves = []       # nodes needing NN eval
@@ -1085,7 +1188,10 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     else:
         refined_root = root_value
 
-    return [(ch.move, ch.visit_count) for ch in root.children], refined_root
+    move_visits = [(ch.move, ch.visit_count) for ch in root.children]
+    if return_root:
+        return move_visits, refined_root, root
+    return move_visits, refined_root
 
 
 # ═════════════════════════════════════════════════════════════════════════════

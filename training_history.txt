@@ -845,3 +845,9 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  848  228  172   0    12282      0   16275.5s   37.6s    9217778   2.4707  2.2829  0.1877  NO HELPERS; **HUGE W>B skew (228-172, 56 points)** — style bias continues
  849  204  195   1    11831    200   15252.8s   41.1s    8881911   2.5180  2.3074  0.2106  ★ **FIRST HELPER IN 55 ITERS** (helper 0 on delta-slurm1); +200 games merged; value loss JUMPED 0.188→0.211 (confirms drought was artifact)
  850  194  206   0    11958    200   15546.8s   41.6s    8969710   2.5185  2.3128  0.2057  ★ new best 100% vs random; +200 helper games; benchmark_enabled=False so NO auto-benchmark fired (would have been iter 850 milestone); wall-time exit
+ 851  209  190   1    12272      0   11863.0s   85.2s    9213024   2.4607  2.2698  0.1909  **FIRST iter on delta after migration**; num_threads=4 restored; 20% faster than trpro-slurm2 (11,863 vs ~15,500); helpers on trpro-slurm2 FAILED; W>B slight
+ 852  211  188   1    12110      0   12024.2s   85.4s    9099654   2.4635  2.2772  0.1863  NO HELPERS (retargeting didn't fix); W>B slight
+ 853  212  186   2    12545      0   12072.5s   87.6s    9424553   2.4703  2.2817  0.1886  NO HELPERS; W>B slight
+ 854  211  189   0    12187      0   11962.0s   88.6s    9159523   2.4615  2.2737  0.1877  NO HELPERS; W>B slight
+ 855  195  205   0    11967      0   11568.6s   85.9s    8982119   2.4553  2.2720  0.1833  NO HELPERS; balanced W~B
+ 856  198  202   0    12482      0   12176.6s   85.8s    9384330   2.4659  2.2830  0.1829  NO HELPERS; balanced W~B; wall-time exit; iter 860 next milestone (no auto-benchmark)
