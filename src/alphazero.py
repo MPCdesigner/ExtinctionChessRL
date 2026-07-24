@@ -804,7 +804,14 @@ def _eval_white(evaluator: AlphaZeroEvaluator, game):
 
 
 def _expand_node(node, policy_logits):
-    """Expand a node using policy logits. Returns value from white's perspective."""
+    """Expand a node using policy logits. Returns value from white's perspective.
+
+    Guards against double-expansion: if the same leaf is selected twice in a
+    batch (rare with virtual loss but possible when priors are weak or the
+    subtree is thin), we must skip re-expansion or the children list gets
+    doubled and stats get corrupted. Matches the C++ MCTS fix (facb668)."""
+    if node.is_expanded:
+        return None
     child_legal = node.game.get_legal_moves()
     if not child_legal:
         node.is_expanded = True
