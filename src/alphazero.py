@@ -932,12 +932,31 @@ def mcts_search_cpp(game, evaluator: AlphaZeroEvaluator,
 def mcts_search(game, evaluator: AlphaZeroEvaluator,
                 num_simulations: int = 800, c_puct: float = 2.5,
                 dirichlet_alpha: float = 0.3, noise_weight: float = 0.25,
-                tactical_shortcuts: bool = True):
+                tactical_shortcuts: bool = True,
+                progress_callback=None,
+                checkpoint_sims=None,
+                checkpoint_callback=None):
     """
     AlphaZero-style MCTS with batched neural network evaluation.
     Collects multiple leaves via virtual loss, evaluates in one GPU call.
     Returns (move_visits, root_value) where move_visits is list of (move, visit_count)
-    and root_value is the value head's evaluation of the root position.
+    and root_value is the SEARCH-REFINED Q-value of the root position
+    (from current player's perspective; falls back to raw NN value if no sims).
+
+    progress_callback: optional callable (sims_done, sims_total) invoked
+    approximately once per MCTS batch (every ~BATCH_SIZE_MCTS=8 sims).
+
+    checkpoint_sims / checkpoint_callback: optional. checkpoint_sims is a
+    list/set of sim counts at which we want to snapshot the current search
+    state; checkpoint_callback is called as
+        checkpoint_callback(sim_count_reached, move_visits, refined_value)
+    the first time sims_done crosses (>=) each value in checkpoint_sims.
+    Move visits are current visit counts; refined_value is the current
+    root Q-value in the current player's perspective. Used by the positional
+    evaluation tool to get all sim-count snapshots from ONE MCTS run
+    instead of running MCTS from scratch for each sim setting.
+
+    Kept out of the hot path when None (checked once per batch).
     """
     root = MCTSNode(game)
 
@@ -991,6 +1010,13 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     if not root.children:
         return [], root_value
 
+    # Precompute sorted checkpoint list (mutated in the loop as they fire)
+    if checkpoint_callback is not None and checkpoint_sims:
+        _remaining_checkpoints = sorted(
+            {int(s) for s in checkpoint_sims if 0 < int(s) <= num_simulations})
+    else:
+        _remaining_checkpoints = []
+
     # Run simulations in batches
     sims_done = 0
     while sims_done < num_simulations:
@@ -1034,6 +1060,22 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
             _remove_virtual_loss(node)
             _backpropagate(node, white_value)
             sims_done += 1
+
+        # Progress hook: fire once per batch. Cheap when None.
+        if progress_callback is not None:
+            progress_callback(sims_done, num_simulations)
+
+        # Checkpoint hook: fire once per crossed threshold.
+        if checkpoint_callback is not None and _remaining_checkpoints:
+            while _remaining_checkpoints and sims_done >= _remaining_checkpoints[0]:
+                cp = _remaining_checkpoints.pop(0)
+                if root.visit_count > 0:
+                    _cp_white_q = root.value_sum / root.visit_count
+                    _cp_val = _cp_white_q if current == Color.WHITE else -_cp_white_q
+                else:
+                    _cp_val = root_value
+                _cp_visits = [(ch.move, ch.visit_count) for ch in root.children]
+                checkpoint_callback(cp, _cp_visits, _cp_val)
 
     # MCTS-refined root value (from current player's perspective).
     # root.value_sum tracks backprop totals in white's perspective.
