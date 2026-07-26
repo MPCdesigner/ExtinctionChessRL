@@ -858,3 +858,10 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  861  206  194   0    12094      0   11617.0s   81.9s    9081270   2.4665  2.2798  0.1867  NO HELPERS; balanced
  862  190  209   1    12118      0   11737.0s   82.3s    9092326   2.4593  2.2748  0.1845  NO HELPERS; slight B>W
  863  210  190   0    11102      0   10568.8s   81.2s    8322862   2.4586  2.2733  0.1854  NO HELPERS; slight W>B; wall-time exit; **LAST iter with BUGGY C++ MCTS**
+ 864  313   87   0    11431      0    5044.9s   81.5s    8311652   2.4483  2.2694  0.1789  ★ **FIRST iter with FIXED C++ MCTS** — iter time HALVED (~5k vs 11k s), value loss dropping, MASSIVE W>B skew 78% (313-87 vs previous 52%)
+ 865  309   91   0    11501      0    5537.8s   81.7s    8387126   2.4630  2.2910  0.1719  Fixed MCTS; W dominates 77%; value loss dropping fast (0.172); policy loss rising (sharper MCTS targets)
+ 866  312   87   1    11367      0    5589.8s   80.7s    8289539   2.4745  2.3132  0.1614  Fixed MCTS; W=78%; value loss 0.161; policy loss 2.313
+ 867  329   71   0    11171      0    5648.3s   79.5s    8107127   2.4812  2.3372  0.1440  Fixed MCTS; W=82%; value loss 0.144; policy loss 2.337
+ 868  317   83   0    10563      0    5553.7s   78.4s    7653124   2.4899  2.3516  0.1383  Fixed MCTS; W=79%; value loss 0.138; NN eval count dropping (fewer positions per iter)
+ 869  329   70   1    10920      0    5572.2s   77.8s    7910366   2.5220  2.3862  0.1358  Fixed MCTS; W=82%; value loss 0.136; policy loss climbing rapidly
+ 870  350   50   0    10320      0    5518.3s   76.2s    7467426   2.5218  2.4014  0.1204  ★ new best 100% vs random; **AUTO-BENCHMARK FIRED** (post-fix milestone); W=88% (350-50 EXTREME skew); value loss 0.120 (down 35% from iter 863); policy loss 2.401 (up 6%); NN evals ~7.5M (down from ~9M pre-fix)

@@ -289,8 +289,214 @@ See memory: positional_eval_tool for full details.
 
 == GPU NOTES ==
 
-delta-slurm1  (RTX 2080 Ti) — main training home
-trpro-slurm1  (RTX 3090)    — helper node (do NOT run tests here during training)
-trpro-slurm2  (RTX 4090)    — PREFERRED for tests + auto-benchmark node
-tr-slurm2     (GTX 1080)    — drain + CUDA errors
-wato2-slurm1  (RTX 2080 Ti) — down
+delta-slurm1  (2× RTX 2080 Ti) — main training home (fast per-core CPUs)
+trpro-slurm1  (4× RTX 3090)    — DRAINED since Jul 14 (SlurmdSpoolDir issue). Node
+                                 is fully idle (CPULoad=0) but drain flag not
+                                 lifted. Admin only needs to run:
+                                   scontrol update NodeName=trpro-slurm1 State=RESUME
+trpro-slurm2  (1× RTX 4090)    — PREFERRED for tests + auto-benchmark node.
+                                 Also helper primary target.
+tr-slurm2     (1× GTX 1080)    — too slow to be useful for helpers.
+wato2-slurm1  (1× RTX 2080 Ti) — drain*
+thor-slurm1                    — drain*
+
+
+== MANUAL BENCHMARK LAUNCH ==
+
+When benchmark_enabled=False was cached in a running job's Python and we
+need to backfill benchmark data for that iter, or when we want extra
+comparison points (e.g. testing a new iter against multiple older ones),
+manually submit the 5 core comparison tests + win-taking as sbatches.
+
+Pattern used successfully for iter 850 (Jul 25) and iter 860 (Jul 26).
+
+Replace <NEW> with the iter number being tested. Replace filenames with
+correct suffixes (100pct vs 98pct — verify with ls first!):
+
+# 1. Recent H2H: vs iter <NEW>-10
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm2 --output=$HOME/compare_<NEW>vs<PREV>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_<PREV>_XXpct.pt --m2 az_iter_<NEW>_XXpct.pt --device cuda"
+
+# 2. Recent H2H: vs iter <NEW>-30 (mid-range)
+# 3. Recent H2H: vs iter <NEW>-50 (regression peak reference — iter 810 currently)
+# 4. Baseline: vs iter 100
+# (same pattern as #1 with different --m1 model)
+
+# 5. Tactical random
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm2 --output=$HOME/tactical_<NEW>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 bench_vs_tactical.py --model az_iter_<NEW>_XXpct.pt --device cuda"
+
+# 6. Win-taking (24 models — rolling window + fixed anchors + baselines)
+# See "Test 1: WIN-TAKING" section above for full template. Replace the model
+# list to keep the newest iter at the front and roll the recent window.
+
+Total time on trpro-slurm2: ~2-2.5 hours for all 6 (sequential — 1 GPU there).
+
+Verify filename suffixes first:
+  ls ~/extinction-chess/models/az_iter_{100,810,830,840,850,860,...}_*.pt
+
+
+== LOCAL TEST SCRIPTS ==
+
+--- tools/test_reuse.py ---
+Tests MCTS subtree reuse correctness by playing self-play with reuse OFF
+vs ON, comparing move-by-move. Use --batch-size 1 for bit-exact validation
+(virtual loss cross-sim effects prevent bit-exact match at batch=8, but
+that's inherent to VL semantics, not a bug in reuse).
+
+  python tools/test_reuse.py --batch-size 1 --moves 10 --model models/az_iter850.pt
+
+--- tools/measure_reuse_savings.py ---
+Measures how many sims of MCTS work would be inherited between consecutive
+moves via subtree reuse. Reports per-move top_visits + speedup estimate.
+
+  python tools/measure_reuse_savings.py --model models/az_iter850.pt --verbose --moves 20
+
+--- tools/positional_eval/ ---
+Interactive pygame tool for inspecting model evaluations on specific
+positions. Multi-model, multi-sim-count. Shows visit counts alongside
+percentages (added Jul 26).
+
+  python -m tools.positional_eval
+
+Values displayed in WHITE'S perspective (positive = White winning).
+
+
+== DIAGNOSTIC: C++ MCTS BATCH-BUG TEST ==
+
+Confirmed bug + fix on Jul 25/26. See memory: c_mcts_batch_bug_fix.
+If ever needed to re-verify the fix (e.g., after future C++ changes):
+
+On cluster, create /tmp/test_batch.py with heredoc:
+
+cat > /tmp/test_batch.py <<'PYEOF'
+import os, sys
+sys.path.insert(0, '/home/h74liang/extinction-chess/src')
+from extinction_chess import ExtinctionChess
+from alphazero import AlphaZeroNet, AlphaZeroEvaluator, mcts_search_cpp, HAS_CPP_MCTS
+if not HAS_CPP_MCTS:
+    print("ERROR: C++ MCTS not available"); sys.exit(1)
+model_path = "/home/h74liang/extinction-chess/models/az_iter_850_100pct.pt"
+model, _ = AlphaZeroNet.load_checkpoint(model_path)
+ev = AlphaZeroEvaluator(model, device="cpu")
+game = ExtinctionChess()
+for bs in [1, 8]:
+    mv = mcts_search_cpp(game, ev, num_simulations=100,
+                        dirichlet_alpha=0.0, noise_weight=0.0,
+                        tactical_shortcuts=False, batch_size=bs)
+    mv_sorted = sorted(mv, key=lambda x: -x[1])
+    total = sum(v for _, v in mv)
+    zeros = sum(1 for _, v in mv if v == 0)
+    print(f"\n=== batch_size={bs} ===")
+    print(f"Top 15 visits: {[v for _, v in mv_sorted[:15]]}")
+    print(f"Total children: {len(mv)}, sum: {total}, top share: {100*mv_sorted[0][1]/total:.1f}%")
+    print(f"Children with 0 visits: {zeros}")
+PYEOF
+python3 /tmp/test_batch.py
+
+Expected AFTER fix: both batch=1 and batch=8 give organic PUCT distributions.
+BUGGY signature: batch=8 output shows [X, 8, 8, 8, 8, ...] (batch-size 8s).
+
+
+== C++ DEPLOYMENT PATTERN ==
+
+Changes to src/cpp/*.h or *.cpp require SCP-up + recompile on cluster:
+
+1. Edit locally (using Edit tool or manually)
+2. Verify with git diff src/cpp/
+
+3. SCP from LOCAL PowerShell (both files if touched):
+   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/mcts.h" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/cpp/
+   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/mcts.cpp" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/cpp/
+
+4. Verify hashes match on cluster + local:
+   # On cluster:
+   md5sum ~/extinction-chess/src/cpp/mcts.cpp ~/extinction-chess/src/cpp/mcts.h
+   # Locally:
+   md5sum src/cpp/mcts.cpp src/cpp/mcts.h
+   (Note: line-ending differences from CRLF conversion may give
+   different hashes even for same content — verify by file size instead)
+
+5. Recompile on cluster:
+   cd ~/extinction-chess/src && python3 setup.py build_ext --inplace 2>&1 | tail -5
+
+6. Verify no compile errors. Cluster's _ext_chess.so is now updated.
+
+Running training jobs use their CACHED .so from job startup (memory-mapped).
+Fix takes effect on NEXT resubmit — train.sh runs build_ext at every start,
+picks up new source, compiles fresh .so, imports it.
+
+To restore original code if fix breaks something:
+  git checkout HEAD -- src/cpp/mcts.h src/cpp/mcts.cpp
+  scp [same paths back to cluster]
+
+
+== HELPER RACE CONDITION NOTES ==
+
+Fixed Jul 25 in src/alphazero.py:
+  # Removed None from terminal states in _wait_until_running
+  sed -i 's|state in (None, "COMPLETED"|state in ("COMPLETED"|' \
+    ~/extinction-chess/src/alphazero.py
+
+Root cause: sbatch registers job in ~100-500ms. Python's immediate squeue
+right after sbatch returned empty ("None"). Old code treated None as
+terminal, gave up. Fixed code retries until 25s deadline.
+
+Symptom of bug: `[helper N] could not allocate a GPU, skipping` every iter
+even when cluster nodes are idle.
+
+If helpers STILL fail after this fix, causes to investigate:
+  1. sbatch failing with error (would print "[helper] sbatch failed (...)")
+  2. Target node queue pressure (auto-benchmark filling trpro-slurm2)
+  3. Alphazero.py's launch_helper_with_fallback defaults pointing at bad nodes
+     (currently primary=trpro-slurm2, fallback=delta-slurm1 per Jul 25 edit)
+
+
+== BENCHMARK LOG PATH CONVENTION ==
+
+Auto-benchmark writes results in two places:
+
+1. Aggregated summary (only created after all 13 tests complete):
+   ~/extinction-chess/benchmark_results/iter_<N>.txt
+
+2. Per-test log files:
+   ~/benchmark_battery/iter_<N>/compare_<N>vs<OPP>_<JOBID>.log
+   ~/benchmark_battery/iter_<N>/tactical_<N>_<JOBID>.log
+   ~/benchmark_battery/iter_<N>/bench_win_taking_<JOBID>.log
+   ~/benchmark_battery/iter_<N>/aggregator_<JOBID>.log
+
+Manual benchmarks (not launched by auto-battery) write to ~/ directly:
+   ~/compare_<N>vs<OPP>_<JOBID>.log
+   ~/tactical_<N>_<JOBID>.log
+   ~/bench_win_taking_<JOBID>.log
+
+
+== UPDATING TRAINING HISTORY FILES ==
+
+Three files must be updated when a training job completes:
+
+1. training_history.txt — column format (verified Jul 26):
+   Iter  W  B  D  Positions  Helper  GenTime  TrainT  NNEvals  Loss  Policy  Value  Notes
+
+   - Iter numbers right-aligned space-padded ("  857  201  198   1...")
+   - Helper column: total helper games merged (400 = both succeeded,
+     200 = one, 0 = both missed)
+   - NNEvals from "batched self-play: NNNN NN evals" line
+   - Notes: flag milestone %, benchmark firings, W>B skews > 40 points,
+     helper drought, etc.
+
+2. terminal_drilling_history.txt — matching iters when drilling active:
+   Iter | Drill | Loss   | Policy | Value  | Time
+
+3. job_history.txt — has TWO sections:
+   - Top table: close previous "RUNNING" row (End time, Duration, State,
+     notes). Add new "RUNNING" row for auto-resubmitted job ID (from
+     "Submitted batch job N" line at end of log).
+   - Bottom section: update previous `# JOBID iters N+` to actual range
+     completed. Add new `tail -10 ~/train_NEWJOBID.log` line.
+
+Grep for the last few rows in each file to match current formatting exactly
+(don't invent new columns).
+
+**Don't record benchmark results in history files** — auto-benchmarks are
+stored at ~/extinction-chess/benchmark_results/iter_<N>.txt on the cluster.
+Manual benchmarks are transient in ~/compare_*.log on the cluster; they
+are NOT durable data.
