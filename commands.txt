@@ -454,7 +454,7 @@ If helpers STILL fail after this fix, causes to investigate:
 
 Auto-benchmark writes results in two places:
 
-1. Aggregated summary (only created after all 13 tests complete):
+1. Aggregated summary (only created after ALL 13 tests complete):
    ~/extinction-chess/benchmark_results/iter_<N>.txt
 
 2. Per-test log files:
@@ -467,6 +467,47 @@ Manual benchmarks (not launched by auto-battery) write to ~/ directly:
    ~/compare_<N>vs<OPP>_<JOBID>.log
    ~/tactical_<N>_<JOBID>.log
    ~/bench_win_taking_<JOBID>.log
+
+--- Tailing auto-benchmark results (per-test logs) ---
+
+# See which tests have completed for iter <N>
+ls -lt ~/benchmark_battery/iter_<N>/*.log 2>/dev/null | head -15
+
+# Tail the "OVERALL RESULTS" section of a specific test
+# (JOBID from the ls above; each log ends with a summary table)
+tail -30 ~/benchmark_battery/iter_<N>/compare_<N>vs<OPP>_<JOBID>.log
+
+# Tail the aggregated summary (only after all 13 tests done):
+cat ~/extinction-chess/benchmark_results/iter_<N>.txt
+
+--- Tailing manual benchmarks ---
+
+# See which manual tests have completed for iter <N>
+# (they land in $HOME directly, not in benchmark_battery/)
+ls -lt ~/compare_<N>vs*.log ~/tactical_<N>_*.log ~/bench_win_taking_*.log 2>/dev/null | head -10
+
+# Tail a specific manual test (JOBID from the ls or from the sbatch output)
+tail -30 ~/compare_<N>vs<OPP>_<JOBID>.log
+
+--- Check the queue for pending benchmarks ---
+
+squeue -u h74liang -o "%.10i %.15P %.20j %.2t %.10M %R"
+# Auto-benchmark jobs are named "wrap" — look for the JOBID range that matches
+# Manual benchmark jobs are also "wrap" — distinguished by JOBID or by the
+# --output flag in the sbatch command (which uses the log filename)
+
+--- What to do when auto-benchmark misses a key iter comparison ---
+
+The auto-battery uses a rolling window (recent = last 5 × 10-iters, distant
+= 100-150 iters back). This means MID-RANGE iters (e.g. 50 iters back) are
+often SKIPPED. If you need a specific comparison like "iter 870 vs iter 810"
+(the rollback-threshold check), submit it manually:
+
+sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=trpro-slurm2 --output=$HOME/compare_<NEW>vs<ANCHOR>_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_<ANCHOR>_XXpct.pt --m2 az_iter_<NEW>_XXpct.pt --device cuda"
+
+Recent history of this happening:
+- Jul 26: iter 870 auto-battery skipped iter 810. Manually submitted
+  compare_870vs810 as a separate job to get the rollback-threshold data.
 
 
 == UPDATING TRAINING HISTORY FILES ==
