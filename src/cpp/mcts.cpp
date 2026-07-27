@@ -116,15 +116,20 @@ int MCTS::select_child(int node_idx) const {
         int ci = node.first_child + i;
         const MCTSNode& child = nodes_[ci];
 
-        // Include virtual loss in child's effective count. Virtual loss is
-        // subtracted from value_sum so busy children look worse for the parent.
+        // Include virtual loss in child's effective count. Virtual loss must
+        // reduce attractiveness from the PARENT's perspective. Since value_sum
+        // is white-perspective, flip VL sign for black parents so that after
+        // the -wq perspective flip below, VL still penalizes.
         int child_total = child.visit_count + child.virtual_loss;
 
         float q;
         if (child_total == 0) {
             q = 0.0f;
         } else {
-            float wq = (child.value_sum - static_cast<float>(child.virtual_loss))
+            float vl_signed = (node.game.side == WHITE)
+                            ? static_cast<float>(child.virtual_loss)
+                            : -static_cast<float>(child.virtual_loss);
+            float wq = (child.value_sum - vl_signed)
                      / static_cast<float>(child_total);
             // q is from parent's perspective
             q = (node.game.side == WHITE) ? wq : -wq;
