@@ -331,8 +331,13 @@ class MCTSNode:
         vc = self.visit_count + self.virtual_loss
         if vc == 0:
             return 0.0
-        wq = (self.value_sum - self.virtual_loss) / vc
-        return wq if self.parent.game.current_player == Color.WHITE else -wq
+        # VL must reduce attractiveness from the PARENT's perspective. Since
+        # value_sum is white-perspective, flip VL sign for black parents so
+        # that after the -wq flip below, VL still penalizes.
+        parent_is_white = self.parent.game.current_player == Color.WHITE
+        vl_signed = self.virtual_loss if parent_is_white else -self.virtual_loss
+        wq = (self.value_sum - vl_signed) / vc
+        return wq if parent_is_white else -wq
 
     def ucb(self, c_puct):
         vc = self.visit_count + self.virtual_loss
