@@ -774,29 +774,158 @@ NN generation, format compatibility. Cost: <$0.20.
       /iter_910_modalA_TEST.npz
 
 
---- ONE-OFF BOOST FOR A SPECIFIC ITER ---
+--- CONFIG SCHEMA + HOW TO CHANGE PARAMETERS ---
 
-Add an entry to iter_overrides in the config. Daemon picks it up on
-next tick automatically.
+File: ~/extinction-chess/modal_helper_config.json
 
-  nano ~/extinction-chess/modal_helper_config.json
+Full schema (all keys optional, missing keys fall back to hardcoded
+defaults in modal_helper_cron.py DEFAULT_CONFIG):
 
-  # Change iter_overrides section:
-  "iter_overrides": {
-    "920": {"num_helpers_per_account": 3}
+  {
+    "cadence": 10,                            # Only ×N iters get processed
+    "default_num_helpers_per_account": 1,     # Helpers per account per event
+    "default_num_games_per_helper": 200,      # Games per helper invocation
+    "default_num_simulations_per_move": 800,  # MCTS sims/move per game
+    "rate_limit_max_events_per_hour": 3,      # Runaway-loop safety cap
+    "iter_overrides": {
+      "<iter_num>": {                         # Per-iter overrides
+        "num_helpers_per_account": <int>,     # (all keys optional)
+        "num_games_per_helper": <int>,
+        "num_simulations_per_move": <int>
+      }
+    }
   }
 
-  # For that iter only, launches 3 helpers per account instead of the
-  # default 1. Total 6 helpers × 200 games = 1200 bonus games. Cost ~$6.
+Daemon reads config fresh on each cron tick. Edit the JSON, save, done —
+no restart needed. Malformed JSON causes a warning and falls back to
+DEFAULT_CONFIG entirely (log will note "config file unreadable").
 
-Override stays keyed on iter number after that iter completes. It's
-harmless to leave in the file — won't retrigger since state file
-marks iter as processed. Or remove after use to keep config tidy.
 
-Other override keys supported:
-  "num_helpers_per_account": <int>   # Override default count
-  "num_games_per_helper":  <int>     # Override default 200 games
-  Both are optional per override; missing keys fall back to defaults.
+--- COMMON PARAMETER TWEAKS ---
+
+# Boost a specific iter with more helpers (spend more credit that event):
+  nano ~/extinction-chess/modal_helper_config.json
+  # Edit iter_overrides to:
+  #   "920": {"num_helpers_per_account": 3}
+  # This launches 3 helpers/acct × 2 accts = 6 helpers on iter 920 alone.
+  # Total games at defaults: 6 × 200 = 1200. Cost: ~$6 on L4.
+
+# Boost a specific iter with higher-QUALITY data (deeper MCTS):
+  # Same total compute cost, half the games, twice the sims:
+  #   "920": {"num_games_per_helper": 100, "num_simulations_per_move": 1600}
+  # Each helper still runs ~1 hour; produces ~half the positions but each
+  # has better MCTS visit targets (2× search depth per position).
+
+# Combine both — max quality burst on iter 920:
+  #   "920": {
+  #     "num_helpers_per_account": 3,
+  #     "num_games_per_helper": 100,
+  #     "num_simulations_per_move": 1600
+  #   }
+  # 6 helpers × 100 games × 1600 sims. Same $ as default 6 × 200 × 800.
+
+# Bump defaults for ALL future ×10 iters:
+  # Increase all iters' spend/quality without per-iter overrides:
+  #   "default_num_helpers_per_account": 2,     (was 1)
+  #   "default_num_games_per_helper": 200,      (unchanged)
+  #   "default_num_simulations_per_move": 1200, (was 800)
+  # Budget carefully — every ×10 event now costs ~4× more.
+
+# Change how often the daemon fires:
+  # cadence=5 = every 5th iter (but cluster only saves ×10 checkpoints
+  # by default, so this alone won't do anything).
+  # cadence=1 = every iter (again, needs cluster checkpoint cadence
+  # to match).
+
+# Override an iter to DISABLE its helpers (skip an iter you don't want):
+  #   "970": {"num_helpers_per_account": 0}
+  # Daemon marks as processed without launching anything.
+
+
+--- GPU CHOICE (per-deployment, not per-iter) ---
+
+The GPU is baked into modal_helper.py at deploy time. Change it by
+editing the file and redeploying to both accounts:
+
+  cd ~/extinction-chess
+  sed -i 's/gpu="L4"/gpu="A10G"/' modal_helper.py   # or T4, A100-40GB, H100
+  MODAL_PROFILE=henryliang416525 modal deploy modal_helper.py
+  MODAL_PROFILE=bobbyzinger122   modal deploy modal_helper.py
+
+Rough per-hour cost + speed (as of Jul 2026):
+  T4:         ~$0.60/hr,  0.7× L4 speed  (slow but cheapest)
+  L4:        *~$0.80/hr,  1.0× baseline  (default, sweet spot)
+  A10G:       ~$1.10/hr,  1.4× L4 speed  (slightly cheaper per helper due to speedup)
+  A100-40GB:  ~$4.00/hr,  2.5× L4 speed  (overkill for our small model)
+  H100:       ~$8.00/hr,  4.0× L4 speed  (way overkill)
+
+Empirically on our workload (from Jul 31 dry-run of 20 games at 800 sims):
+  L4:   ~19s/game → ~1.05h for 200 games → $0.84 per default helper
+  A10G: ~14s/game → ~0.78h for 200 games → $0.86 per default helper
+                    (barely more expensive despite higher $/hr)
+
+The daemon doesn't need updating when you change the GPU — Modal captures
+the deploy config at `modal run` time.
+
+
+--- MANUAL BOOST FOR A NON-×10 ITER ---
+
+Cluster only saves versioned checkpoints (az_iter_<N>_XXpct.pt) at
+×10 iters. The current iter's weights are always in az_latest.pt but
+that file gets overwritten every iter.
+
+To fire a manual helper for a non-×10 iter (say iter 917), catch the
+narrow window between iter 917 finishing and iter 918 starting
+(~3.5h currently). Steps below assume account A, adapt for B similarly.
+
+  # 1. Verify az_latest.pt is at the iter you want. Read meta.iteration:
+  python3 -c "
+  from alphazero import AlphaZeroNet
+  m, meta = AlphaZeroNet.load_checkpoint('/home/h74liang/extinction-chess/models/az_latest.pt')
+  print('iter:', meta.get('iteration'), 'win_rate:', meta.get('win_rate'))
+  "
+  # Confirm shows iter 917 (or whatever you want).
+
+  # 2. Upload az_latest.pt to Modal Volume with a specific name (both accts
+  #    if you want 2 helpers, or one account if solo):
+  MODAL_PROFILE=henryliang416525 modal volume put extinction-chess-ckpts \
+      /home/h74liang/extinction-chess/models/az_latest.pt \
+      /az_iter_917_manual.pt --force
+
+  # 3. Invoke helper on account A (blocks ~45-60 min):
+  cd /home/h74liang/extinction-chess
+  MODAL_PROFILE=henryliang416525 modal run modal_helper.py::run_helper \
+      --checkpoint-filename az_iter_917_manual.pt \
+      --output-filename iter_917_modalA_MANUAL.npz \
+      --num-games 200 \
+      --num-simulations 800
+
+  # 4. Download and place in replay_buffer/ atomically:
+  MODAL_PROFILE=henryliang416525 modal volume get extinction-chess-helper-outputs \
+      /iter_917_modalA_MANUAL.npz \
+      /home/h74liang/extinction-chess/replay_buffer/iter_917_modalA_MANUAL.npz.part \
+      --force
+  mv /home/h74liang/extinction-chess/replay_buffer/iter_917_modalA_MANUAL.npz.part \
+     /home/h74liang/extinction-chess/replay_buffer/iter_917_modalA_MANUAL.npz
+
+  # 5. (Optional) Cleanup Modal volume:
+  MODAL_PROFILE=henryliang416525 modal volume rm extinction-chess-ckpts \
+      /az_iter_917_manual.pt
+  MODAL_PROFILE=henryliang416525 modal volume rm extinction-chess-helper-outputs \
+      /iter_917_modalA_MANUAL.npz
+
+  # The cluster training loader will pick up iter_917_modalA_MANUAL.npz on
+  # the next training-step buffer load, treating it as iter 917's data.
+  # It gets cleaned up when iter 917 rolls out of the K=5 buffer window
+  # (at cluster iter 922, cleanup deletes all iter_917*.npz).
+
+Caveats:
+  - The window to grab az_latest.pt for iter 917 is ~3.5h. If cluster is
+    already on iter 918+, az_latest.pt no longer reflects iter 917.
+  - The daemon's config-driven pipeline doesn't apply here — this is
+    fully manual. You choose helpers/games/sims per invocation.
+  - Files must be named `iter_<N>_<tag>.npz` where tag is [A-Za-z0-9]+
+    to be picked up by the loader (see _REPLAY_ITER_RE in alphazero.py).
 
 
 --- MONITORING ---

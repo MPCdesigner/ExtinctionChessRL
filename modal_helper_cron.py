@@ -67,6 +67,7 @@ DEFAULT_CONFIG = {
     "cadence": 10,
     "default_num_helpers_per_account": 1,
     "default_num_games_per_helper": 200,
+    "default_num_simulations_per_move": 800,
     "rate_limit_max_events_per_hour": 3,
     "iter_overrides": {},
 }
@@ -167,12 +168,13 @@ def upload_checkpoint(profile, ckpt_fname, tag):
     ], tag=f"[upload {tag}]")
 
 
-def invoke_helper(profile, ckpt_fname, out_fname, num_games, tag):
+def invoke_helper(profile, ckpt_fname, out_fname, num_games, num_sims, tag):
     return run_modal(profile, [
         "run", MODAL_HELPER_PY + "::run_helper",
         "--checkpoint-filename", ckpt_fname,
         "--output-filename", out_fname,
         "--num-games", str(num_games),
+        "--num-simulations", str(num_sims),
     ], tag=f"[invoke {tag}]")
 
 
@@ -215,7 +217,7 @@ def validate_npz(path):
 # ── Per-iter processing ───────────────────────────────────────────────────
 
 def process_one_helper_launch(profile, tag_letter, launch_idx,
-                              iter_num, ckpt_fname, num_games):
+                              iter_num, ckpt_fname, num_games, num_sims):
     """Execute one helper launch end-to-end. Returns True if the .npz was
     delivered to replay_buffer/, False otherwise."""
     tag         = f"{profile[:1].upper()}{launch_idx}"  # e.g. "A1"
@@ -224,7 +226,8 @@ def process_one_helper_launch(profile, tag_letter, launch_idx,
     final_dest  = os.path.join(REPLAY_DIR, out_fname)
 
     # 2. Invoke helper (blocks until Modal function returns)
-    rc, _, se = invoke_helper(profile, ckpt_fname, out_fname, num_games, tag)
+    rc, _, se = invoke_helper(profile, ckpt_fname, out_fname,
+                              num_games, num_sims, tag)
     if rc != 0:
         print(f"{LOG} [{tag}] helper failed rc={rc}: {se[-500:]}",
               flush=True)
@@ -266,6 +269,9 @@ def process_iter(iter_num, ckpt_fname, cfg, state):
     n_games = int(overrides.get(
         "num_games_per_helper",
         cfg["default_num_games_per_helper"]))
+    n_sims = int(overrides.get(
+        "num_simulations_per_move",
+        cfg["default_num_simulations_per_move"]))
     if n_per_acct <= 0:
         print(f"{LOG} iter {iter_num}: num_helpers_per_account=0, skipping",
               flush=True)
@@ -274,7 +280,8 @@ def process_iter(iter_num, ckpt_fname, cfg, state):
     total = n_per_acct * len(PROFILES)
     print(f"{LOG} iter {iter_num}: {total} helpers "
           f"({n_per_acct} per account × {len(PROFILES)} accounts) × "
-          f"{n_games} games each = {total * n_games} bonus games",
+          f"{n_games} games × {n_sims} sims/move "
+          f"= {total * n_games} bonus games",
           flush=True)
 
     # Rate limit check based on processing EVENTS (this iter counts as one)
@@ -317,7 +324,7 @@ def process_iter(iter_num, ckpt_fname, cfg, state):
         for launch_idx in range(1, n_per_acct + 1):
             if process_one_helper_launch(
                     profile, tag_letter, launch_idx,
-                    iter_num, ckpt_fname, n_games):
+                    iter_num, ckpt_fname, n_games, n_sims):
                 landed += 1
         return landed
 
