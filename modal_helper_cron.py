@@ -56,9 +56,11 @@ MODAL_BIN         = os.environ.get(
 LOG = "[modal-cron]"
 
 # Modal profile names → filename tag ("A" or "B"). Order determines
-# which account launches first for parallel invocation.
-PROFILES = [("henry-account-a", "A"),
-            ("henry-account-b", "B")]
+# which account launches first for parallel invocation. Profile names
+# match what Modal auto-created from the workspace name; if you rename
+# them in ~/.modal.toml, update these entries too.
+PROFILES = [("henryliang416525", "A"),
+            ("bobbyzinger122",   "B")]
 
 # Default config, applied when the config file is absent or missing keys.
 DEFAULT_CONFIG = {
@@ -138,12 +140,20 @@ def within_rate_limit(cfg, recent_events):
 # ── Modal subprocess wrappers ─────────────────────────────────────────────
 
 def run_modal(profile, args, tag=""):
-    """Fire a modal command via subprocess. Returns (rc, stdout, stderr)."""
-    cmd = [MODAL_BIN, "--profile", profile] + args
-    print(f"{LOG} {tag} $ {' '.join(cmd)}", flush=True)
+    """Fire a modal command via subprocess. Returns (rc, stdout, stderr).
+
+    Modal CLI 1.5+ selects profiles via the MODAL_PROFILE env var, not a
+    top-level --profile flag (which doesn't exist). We copy the current
+    environment and set MODAL_PROFILE for this invocation only.
+    """
+    cmd = [MODAL_BIN] + args
+    env = os.environ.copy()
+    env["MODAL_PROFILE"] = profile
+    print(f"{LOG} {tag} MODAL_PROFILE={profile} $ {' '.join(cmd)}",
+          flush=True)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=SUBPROC_TIMEOUT)
+                           timeout=SUBPROC_TIMEOUT, env=env)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired as e:
         return 124, "", f"TIMEOUT after {SUBPROC_TIMEOUT}s"

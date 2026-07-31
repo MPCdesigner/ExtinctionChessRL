@@ -545,17 +545,36 @@ are NOT durable data.
 
 == MODAL HELPER PIPELINE ==
 
+STATUS: DEPLOYED AND LIVE (as of 2026-07-31).
 Cluster-side cron daemon runs Modal helpers every ×10 iter, delivers
-extra 400 games/iter (or more with per-iter overrides) into replay_buffer/.
+extra ~400 games/iter (or more with per-iter overrides) into replay_buffer/.
 Files use `iter_<N>_modal<A|B><i>.npz` naming; cluster loader accepts them
-via the regex `iter_<N>(_<tag>)?.npz`.
+via the regex `iter_<N>(_<tag>)?.npz` (see src/alphazero.py _REPLAY_ITER_RE).
 
---- Files involved ---
+Two Modal accounts share the workload. Each has $30/month free credit.
+Combined budget: $60/month. Cost per default-config event: ~$2 total
+(1 helper/account × 2 accounts × ~$1). Cost per boost event with
+num_helpers_per_account=3: ~$6 total.
+
+Rollback anchor on GitHub: commit `da35ed5` is the pre-Modal state.
+Emergency: see EMERGENCY REVERT section below.
+
+
+--- WHY WE BUILT THIS ---
+
+Cluster's built-in helper mechanism (helpers_per_iter=2 in run_training.py)
+launches sbatch helpers per iter. Since ~iter 795 those cluster helpers have
+been failing every iter (trpro-slurm1 drained since Jul 14 = day 17+; helper
+can't fit on delta-slurm1 because our main job uses 4/6 CPUs and helper.sh
+needs 8). The Modal pipeline replaces those with off-cluster helpers.
+
+
+--- FILES INVOLVED ---
 
     LOCAL (repo):
       modal_helper.py         # Modal function definition (deployed once/acct)
       modal_helper_cron.py    # Cluster-side cron entry
-      src/alphazero.py        # Loader regex + try/except (already deployed)
+      src/alphazero.py        # Loader regex + try/except (deployed to cluster)
 
     CLUSTER:
       ~/extinction-chess/modal_helper.py          # deployed
@@ -564,128 +583,220 @@ via the regex `iter_<N>(_<tag>)?.npz`.
       ~/extinction-chess/modal_helper_state.json  # auto-maintained
       ~/extinction-chess/MODAL_DISABLED           # KILL SWITCH (touch to pause)
       ~/modal_helper_cron.log                     # cron output
+      ~/.modal.toml                               # auth (both profiles)
+      ~/.local/bin/modal                          # CLI binary
 
 
---- ONE-TIME SETUP ---
+--- MODAL CLI GOTCHAS DISCOVERED DURING DEPLOY (Jul 31) ---
 
-1) SCP the code:
-   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/modal_helper.py" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/
-   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/modal_helper_cron.py" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/
+These caught us off-guard vs. Modal doc examples. If future-you rebuilds:
 
-2) On cluster: install Modal CLI + create profiles:
-   pip install --user modal
+1. `modal profile create <name>` does NOT exist. Profile is auto-created
+   by `modal token set --token-id ... --token-secret ... --profile <name>`.
+   If you omit `--profile <name>`, Modal names the profile after the
+   WORKSPACE NAME automatically (our profiles are `henryliang416525`
+   and `bobbyzinger122` — the workspace names, not what we intended).
 
-   # Get tokens from Modal web dashboard → Settings → API Tokens
-   modal profile create henry-account-a   # paste account A token
-   modal profile create henry-account-b   # paste account B token
+2. `modal token check` does NOT exist in Modal 1.5+. To verify auth,
+   use `modal app list` — should return empty table (not an auth error).
 
-   # Verify auth works for both
-   modal --profile henry-account-a token check
-   modal --profile henry-account-b token check
+3. `--profile` is NOT a top-level flag. `modal --profile X token check`
+   fails with "No such option '--profile'". Correct pattern is env var:
+       MODAL_PROFILE=<name> modal <subcommand>
+   Our daemon uses this env-var approach (see run_modal() in
+   modal_helper_cron.py). Old commands in this doc that show
+   `modal --profile X ...` are WRONG and need this fix.
 
-3) Deploy modal_helper.py to both accounts:
-   cd ~/extinction-chess
-   modal --profile henry-account-a deploy modal_helper.py
-   modal --profile henry-account-b deploy modal_helper.py
-
-4) Set hard spending cap on each account (via web dashboard, per acct):
-   Settings → Billing → Spending Limit = $30
-
-5) Create initial config file:
-   cat > ~/extinction-chess/modal_helper_config.json <<'EOF'
-   {
-     "cadence": 10,
-     "default_num_helpers_per_account": 1,
-     "default_num_games_per_helper": 200,
-     "rate_limit_max_events_per_hour": 3,
-     "iter_overrides": {}
-   }
-   EOF
-
-6) Enable kill-switch BEFORE the first cron run (safety):
-   touch ~/extinction-chess/MODAL_DISABLED
-
-7) Install cron entry (5-min tick):
-   crontab -e
-   # Add this line (all on one line):
-   */5 * * * * /home/h74liang/.local/bin/python /home/h74liang/extinction-chess/modal_helper_cron.py --once >> /home/h74liang/modal_helper_cron.log 2>&1
-
-   # Verify:
-   crontab -l
+4. Cron does NOT inherit user PATH. `/home/h74liang/.local/bin/python`
+   does NOT exist (only pip-installed scripts land there). Use full
+   `/usr/bin/python3` in the crontab entry. `~/.bashrc` addition of
+   `~/.local/bin` to PATH is for interactive shells only.
 
 
---- DRY-RUN VERIFICATION ---
+--- CURRENT PROFILE NAMES ---
 
-Before removing the kill switch, verify each piece:
+  Profile A: henryliang416525  (workspace: henryliang416525)
+  Profile B: bobbyzinger122    (workspace: bobbyzinger122)
 
-  # Cron is firing (should see "disabled via ...MODAL_DISABLED" line every 5 min)
-  tail -f ~/modal_helper_cron.log
-
-  # Modal helper works end-to-end (manual run against a real checkpoint):
-  cd ~/extinction-chess
-  modal --profile henry-account-a volume put extinction-chess-ckpts \
-      models/az_iter_910_100pct.pt /az_iter_910_100pct.pt --force
-  modal --profile henry-account-a run modal_helper.py::run_helper \
-      --checkpoint-filename az_iter_910_100pct.pt \
-      --output-filename iter_910_modalA_TEST.npz \
-      --num-games 20
-  modal --profile henry-account-a volume get extinction-chess-helper-outputs \
-      /iter_910_modalA_TEST.npz /tmp/test.npz
-
-  # Validate format matches cluster's expectation:
-  python3 -c "import numpy as np; d = np.load('/tmp/test.npz'); \
-    print('boards:', d['boards'].shape, d['boards'].dtype); \
-    print('policies:', d['policies'].shape, d['policies'].dtype); \
-    print('values:', d['values'].shape, d['values'].dtype)"
-  # Expected:
-  # boards: (~1600, 115, 8, 8) uint8
-  # policies: (~1600, 4864) float32
-  # values: (~1600,) float32
+Change these in modal_helper_cron.py PROFILES tuple if profiles get
+renamed. Currently:
+  PROFILES = [("henryliang416525", "A"),
+              ("bobbyzinger122",   "B")]
 
 
---- ENABLE THE PIPELINE ---
+--- CURRENT CRON ENTRY (from `crontab -l`) ---
 
-Once dry run passes:
-  rm ~/extinction-chess/MODAL_DISABLED
-
-Next ×10 iter that completes will trigger the daemon on the next cron tick.
-Watch first live run:
-  tail -f ~/modal_helper_cron.log
-  ls -la ~/extinction-chess/replay_buffer/ | grep modal
+  */5 * * * * /usr/bin/python3 /home/h74liang/extinction-chess/modal_helper_cron.py --once >> /home/h74liang/modal_helper_cron.log 2>&1
 
 
---- ONE-OFF BOOST (e.g., iter 920 with 3× helpers per account) ---
+--- CURRENT CONFIG (~/extinction-chess/modal_helper_config.json) ---
 
-Edit config any time before iter 920 completes:
-  nano ~/extinction-chess/modal_helper_config.json
-
-  # Change iter_overrides to:
   {
-    ...
+    "cadence": 10,
+    "default_num_helpers_per_account": 1,
+    "default_num_games_per_helper": 200,
+    "rate_limit_max_events_per_hour": 3,
     "iter_overrides": {
       "920": {"num_helpers_per_account": 3}
     }
   }
 
-Daemon picks up the override on next tick. iter 920 gets 6 helpers instead of 2.
-Override entry can stay after iter 920 completes — it's keyed on iter and
-won't affect other iters. Remove it later if you want to keep the file tidy.
+  Iter 920 boost is active: 3 helpers/account × 2 accounts = 6 helpers,
+  ~1200 bonus games, ~$6 total (July burn of remaining credit).
 
 
---- EMERGENCY REVERT (in order of severity) ---
+--- FULL SETUP RECREATION (if we ever have to rebuild from scratch) ---
 
-    # 1) Pause pipeline instantly (training unaffected):
-    touch ~/extinction-chess/MODAL_DISABLED
+Assumes commit `da35ed5` or later is checked out locally + on cluster.
 
-    # 2) Remove all Modal data from replay buffer (next iter loads without it):
-    rm ~/extinction-chess/replay_buffer/*_modal*.npz
+1) SCP the code from local:
+   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/modal_helper.py" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/
+   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/modal_helper_cron.py" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/
+   scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/src/alphazero.py" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
 
-    # 3) Disable cron entirely:
-    crontab -e   # delete the modal_helper_cron.py line
+2) On cluster: install Modal CLI + add ~/.local/bin to PATH:
+   pip install --user modal
+   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+   source ~/.bashrc
+   which modal   # /home/h74liang/.local/bin/modal
+   modal --version
 
-    # 4) Revert loader change (only affects next resubmit; running iter finishes fine):
-    #   locally: git checkout HEAD -- src/alphazero.py
-    #   then SCP back to cluster, wait for next resubmit
+3) Generate tokens (one per account) from Modal web dashboard:
+   For EACH account: Settings → API Tokens → New Token.
+   Copy the FULL `modal token set --token-id ak-... --token-secret as-...`
+   command Modal shows.
+
+   Then IN THE TERMINAL (never paste tokens to chat/screenshots/logs):
+
+   modal token set --token-id ak-<A_ID> --token-secret as-<A_SECRET>
+   # Modal auto-names profile after workspace, e.g. `henryliang416525`
+
+   modal token set --token-id ak-<B_ID> --token-secret as-<B_SECRET>
+   # e.g. `bobbyzinger122`
+
+   Verify:
+     modal profile list                    # Should show both profiles
+     MODAL_PROFILE=henryliang416525 modal app list   # empty table = OK
+     MODAL_PROFILE=bobbyzinger122   modal app list
+
+   If your workspace names differ, update PROFILES in modal_helper_cron.py.
+
+4) Set spending caps (safety net — hard cap in Modal blocks charges
+   beyond this even if daemon runs amok):
+   For EACH account: web dashboard → Settings → Billing →
+     Spending Limit = $30
+
+5) Deploy modal_helper.py to both accounts:
+   cd ~/extinction-chess
+   MODAL_PROFILE=henryliang416525 modal deploy modal_helper.py
+   MODAL_PROFILE=bobbyzinger122   modal deploy modal_helper.py
+
+   First deploy per account = 5-10 min (installs torch + cuda deps in image).
+   Subsequent deploys reuse cached layers = ~5s.
+
+6) Create config file (~/extinction-chess/modal_helper_config.json):
+   See "CURRENT CONFIG" section above for schema.
+
+7) Prime state file so daemon doesn't backfill 90 pre-existing ×10 iters:
+   python3 -c "
+   import json, os, re
+   models_dir = os.path.expanduser('~/extinction-chess/models')
+   processed = []
+   for fname in os.listdir(models_dir):
+       m = re.match(r'az_iter_(\d+)_\d+pct\.pt$', fname)
+       if m:
+           n = int(m.group(1))
+           if n % 10 == 0:
+               processed.append(n)
+   state = {'processed_iters': sorted(processed), 'recent_events': []}
+   with open(os.path.expanduser('~/extinction-chess/modal_helper_state.json'), 'w') as f:
+       json.dump(state, f, indent=2)
+   print(f'Marked {len(processed)} iters as processed')
+   "
+   (Adjust conditional if you want to EXCLUDE specific iter for reprocessing.)
+
+8) Kill switch on BEFORE cron install (paranoia is free):
+   touch ~/extinction-chess/MODAL_DISABLED
+
+9) Install cron entry:
+   crontab -e
+   # Add (all one line):
+   */5 * * * * /usr/bin/python3 /home/h74liang/extinction-chess/modal_helper_cron.py --once >> /home/h74liang/modal_helper_cron.log 2>&1
+
+10) Wait 5-10 min; verify cron fires and daemon respects sentinel:
+    tail ~/modal_helper_cron.log
+    # Expected: [modal-cron] disabled via /home/h74liang/extinction-chess/MODAL_DISABLED, exiting
+
+11) Enable pipeline for real:
+    rm ~/extinction-chess/MODAL_DISABLED
+
+
+--- OPTIONAL DRY-RUN TEST (before enabling) ---
+
+Quick 20-game invocation on account A. Validates image build, C++ compile,
+NN generation, format compatibility. Cost: <$0.20.
+
+  cd ~/extinction-chess
+
+  # Upload a real checkpoint to Modal Volume
+  MODAL_PROFILE=henryliang416525 modal volume put extinction-chess-ckpts \
+      models/az_iter_910_100pct.pt /az_iter_910_100pct.pt --force
+
+  # Invoke helper (blocks 15-25 min for image build + 20 games)
+  MODAL_PROFILE=henryliang416525 modal run modal_helper.py::run_helper \
+      --checkpoint-filename az_iter_910_100pct.pt \
+      --output-filename iter_910_modalA_TEST.npz \
+      --num-games 20
+
+  # Download output
+  MODAL_PROFILE=henryliang416525 modal volume get extinction-chess-helper-outputs \
+      /iter_910_modalA_TEST.npz /tmp/test.npz --force
+
+  # Validate .npz format (should match cluster loader's expectations)
+  python3 -c "
+  import numpy as np
+  with np.load('/tmp/test.npz') as d:
+      print('boards:  ', d['boards'].shape, d['boards'].dtype)
+      print('policies:', d['policies'].shape, d['policies'].dtype)
+      print('values:  ', d['values'].shape, d['values'].dtype)
+      print('num_games:', int(d['num_games']))
+      print('iter_num:', int(d['iter_num']))
+  "
+  # Expected for 20 games:
+  #   boards:   (~700, 115, 8, 8) uint8
+  #   policies: (~700, 4864) float32
+  #   values:   (~700,) float32
+  #   num_games: 20
+  #   iter_num: 910
+
+  # Cleanup test file:
+  MODAL_PROFILE=henryliang416525 modal volume rm extinction-chess-helper-outputs \
+      /iter_910_modalA_TEST.npz
+
+
+--- ONE-OFF BOOST FOR A SPECIFIC ITER ---
+
+Add an entry to iter_overrides in the config. Daemon picks it up on
+next tick automatically.
+
+  nano ~/extinction-chess/modal_helper_config.json
+
+  # Change iter_overrides section:
+  "iter_overrides": {
+    "920": {"num_helpers_per_account": 3}
+  }
+
+  # For that iter only, launches 3 helpers per account instead of the
+  # default 1. Total 6 helpers × 200 games = 1200 bonus games. Cost ~$6.
+
+Override stays keyed on iter number after that iter completes. It's
+harmless to leave in the file — won't retrigger since state file
+marks iter as processed. Or remove after use to keep config tidy.
+
+Other override keys supported:
+  "num_helpers_per_account": <int>   # Override default count
+  "num_games_per_helper":  <int>     # Override default 200 games
+  Both are optional per override; missing keys fall back to defaults.
 
 
 --- MONITORING ---
@@ -693,11 +804,122 @@ won't affect other iters. Remove it later if you want to keep the file tidy.
   # Recent cron activity:
   tail -100 ~/modal_helper_cron.log
 
-  # What's been processed:
-  cat ~/extinction-chess/modal_helper_state.json | python3 -m json.tool
+  # Follow cron activity in real time (Ctrl+C to exit):
+  tail -f ~/modal_helper_cron.log
 
-  # What Modal files are currently in the buffer:
+  # What iters have been processed:
+  cat ~/extinction-chess/modal_helper_state.json | python3 -m json.tool | head -20
+
+  # Modal files currently in the buffer (should appear after iter 920 lands):
   ls -la ~/extinction-chess/replay_buffer/ | grep modal
 
-  # Modal usage / remaining credit (check dashboard):
-  # https://modal.com/apps → Settings → Billing (per account)
+  # Cluster's view of buffer size per training step (should grow when Modal
+  # files land — normal iter is ~15k positions, boosted iter ~35k+):
+  grep "replay buffer: loaded" ~/train_<JOBID>.log | tail -10
+
+  # Modal Volume contents (per account):
+  MODAL_PROFILE=henryliang416525 modal volume ls extinction-chess-ckpts
+  MODAL_PROFILE=henryliang416525 modal volume ls extinction-chess-helper-outputs
+  MODAL_PROFILE=bobbyzinger122   modal volume ls extinction-chess-ckpts
+  MODAL_PROFILE=bobbyzinger122   modal volume ls extinction-chess-helper-outputs
+
+  # Current remaining credit / spend (check dashboard):
+  #   https://modal.com/apps → Settings → Billing (per account)
+
+
+--- EMERGENCY REVERT (in order of severity) ---
+
+    # 1) Pause pipeline instantly. Training unaffected. Cron still fires
+    #    but daemon exits at sentinel check with a log line.
+    touch ~/extinction-chess/MODAL_DISABLED
+
+    # 2) Remove all Modal data from replay buffer. Next iter loads
+    #    without it. No lasting effect on training.
+    rm ~/extinction-chess/replay_buffer/*_modal*.npz
+
+    # 3) Disable cron entirely (kill switch not needed if cron is off).
+    crontab -e   # delete the modal_helper_cron.py line
+
+    # 4) Revert the loader change on cluster (only takes effect at NEXT
+    #    resubmit; currently-running iter finishes normally):
+    cd /home/h74liang/extinction-chess
+    git fetch origin
+    git checkout da35ed5 -- src/alphazero.py
+    # (Or SCP a fresh copy from local git.)
+    # Then wait for cluster's next SLURM resubmit — will pick up reverted code.
+
+    # 5) Full uninstall of Modal pipeline from cluster:
+    #    (Also does #1-#4 as side effects.)
+    rm ~/extinction-chess/modal_helper.py
+    rm ~/extinction-chess/modal_helper_cron.py
+    rm ~/extinction-chess/modal_helper_config.json
+    rm ~/extinction-chess/modal_helper_state.json
+    crontab -e   # delete the cron line
+    pip uninstall --user modal   # optional
+
+
+--- TROUBLESHOOTING ---
+
+Symptom: `tail ~/modal_helper_cron.log` shows nothing new after 5+ min
+  Likely: cron entry has a syntax error or wrong Python path
+  Check:  crontab -l  (verify `/usr/bin/python3` path, not `~/.local/bin/python`)
+          which python3  (should be /usr/bin/python3)
+
+Symptom: Log shows "/bin/sh: 1: /home/h74liang/.local/bin/python: not found"
+  Cause: crontab uses stale path
+  Fix:   crontab -e, replace with /usr/bin/python3, save
+
+Symptom: Log shows "[modal-cron] rate-limited (3/h cap), deferring iter ..."
+  Cause: More than 3 processing events in the last rolling hour
+  Fix:   Wait an hour, or edit config to bump rate_limit_max_events_per_hour
+
+Symptom: `modal deploy` returns "Auth error" or "profile not found"
+  Cause: MODAL_PROFILE env var not set, or profile name wrong
+  Fix:   MODAL_PROFILE=<workspace_name> modal ...
+         List profiles: modal profile list
+
+Symptom: Cluster training crashes on load with numpy shape error
+  Cause: A Modal file has wrong format (shouldn't happen with validate step,
+         but if it does...)
+  Fix:   Immediately: rm ~/extinction-chess/replay_buffer/*_modal*.npz
+         Then investigate which file was bad (validate manually)
+         The loader has try/except so a single bad file won't crash training
+         — but if validation was skipped or file mid-write, could still fail.
+
+Symptom: Modal helper fails during self-play with C++ import error
+  Cause: modal_helper.py's build_ext step failed
+  Fix:   Check helper's stdout: MODAL_PROFILE=<name> modal app logs extinction-chess-helper
+         Usually a missing apt package or version mismatch.
+
+Symptom: `modal volume put` says "volume not found"
+  Cause: Volume wasn't auto-created on first invocation
+  Fix:   MODAL_PROFILE=<name> modal volume create extinction-chess-ckpts
+         MODAL_PROFILE=<name> modal volume create extinction-chess-helper-outputs
+
+Symptom: `modal token check` says "No such command"
+  Cause: Command doesn't exist in Modal 1.5+ (see gotchas above)
+  Fix:   Use `MODAL_PROFILE=<name> modal app list` instead
+
+
+--- COST TRACKING ---
+
+Per-invocation cost on L4 GPU (based on iter 910 dry-run):
+  20 games in 380s → ~19s/game → ~1.05 hr for 200 games → ~$1
+
+Estimated per-event costs:
+  Default (1 helper/acct × 2 acct × 200 games):  2 helpers × $1 = ~$2
+  With num_helpers_per_account=2:                4 helpers × $1 = ~$4
+  With num_helpers_per_account=3 (iter 920):     6 helpers × $1 = ~$6
+
+Free credit per month per account: $30
+Total budget: $60/month
+At default settings: 30 events per month before hitting cap
+At 3x boost per event: 10 events per month
+
+For sustained default cadence (every ×10 iter), that's plenty of runway.
+
+
+--- APP DEPLOYMENT URLs (for dashboard debugging) ---
+
+  Account A: https://modal.com/apps/henryliang416525/main/deployed/extinction-chess-helper
+  Account B: https://modal.com/apps/bobbyzinger122/main/deployed/extinction-chess-helper
