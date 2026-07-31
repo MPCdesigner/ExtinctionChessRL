@@ -18,7 +18,15 @@ from typing import List, Tuple
 
 import pygame
 
-from .model_manager import SIM_OPTIONS
+from .model_manager import SIM_OPTIONS, SIM_UNLIMITED
+
+
+def _sim_label(s: int) -> str:
+    if s == 1:
+        return "raw NN (1)"
+    if s == SIM_UNLIMITED:
+        return "unlimited"
+    return f"{s} sims"
 
 
 class SettingsPanel:
@@ -135,9 +143,7 @@ class SettingsPanel:
             pygame.draw.circle(surface, (80, 80, 80), (cx, cy), 6, width=1)
             if selected:
                 pygame.draw.circle(surface, (30, 120, 220), (cx, cy), 3)
-            label = self.font_row.render(
-                "raw NN (1)" if s == 1 else f"{s} sims",
-                True, (30, 30, 30))
+            label = self.font_row.render(_sim_label(s), True, (30, 30, 30))
             surface.blit(label, (row.left + 24, row.top + 3))
 
         # Header: models

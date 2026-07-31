@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 
 import pygame
 
-from .model_manager import EvalResult
+from .model_manager import EvalResult, SIM_UNLIMITED
 
 
 MAX_MOVES_SHOWN = 20  # cap; stop earlier when we hit a zero-prob entry
@@ -108,13 +108,20 @@ class EvalColumn:
         sec_rect = pygame.Rect(x + 2, cy, self.WIDTH - 4, section_h)
         pygame.draw.rect(surface, self.SECTION_BG, sec_rect)
 
-        # Section header: "raw NN" or "N sims" + value
+        # Section header: "raw NN" or "N sims" + value + optional stopped note
         if result is None:
             header_text = self._sim_label(sim_count) + "   (pending)"
+            header_color = (20, 40, 90)
+        elif result.stopped_at is not None:
+            header_text = (f"{self._sim_label(sim_count)}   "
+                           f"value = {result.value:+.3f}   "
+                           f"(stopped at {result.stopped_at} sims)")
+            header_color = (150, 60, 20)  # amber-red to signal partial
         else:
             header_text = (f"{self._sim_label(sim_count)}   "
                            f"value = {result.value:+.3f}")
-        text = self.font_sub.render(header_text, True, (20, 40, 90))
+            header_color = (20, 40, 90)
+        text = self.font_sub.render(header_text, True, header_color)
         surface.blit(text, (x + self.PAD, cy + 3))
         cy += self.SECTION_HEADER_HEIGHT
 
@@ -142,7 +149,11 @@ class EvalColumn:
 
     @staticmethod
     def _sim_label(sim_count: int) -> str:
-        return "raw NN" if sim_count == 1 else f"{sim_count} sims"
+        if sim_count == 1:
+            return "raw NN"
+        if sim_count == SIM_UNLIMITED:
+            return "unlimited"
+        return f"{sim_count} sims"
 
     @staticmethod
     def _format_move(move) -> str:

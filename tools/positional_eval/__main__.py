@@ -45,7 +45,7 @@ from .controls_widget import (  # noqa: E402
 from .settings_panel import SettingsPanel  # noqa: E402
 from .eval_column import EvalColumn  # noqa: E402
 from .position_state import PositionState, Mode  # noqa: E402
-from .model_manager import ModelManager, EvalResult  # noqa: E402
+from .model_manager import ModelManager, EvalResult, SIM_UNLIMITED  # noqa: E402
 from .startup_dialog import pick_models  # noqa: E402
 
 
@@ -79,6 +79,11 @@ class App:
         self.selected_square: Optional[Position] = None
         # results[model_index][sim_count] = EvalResult
         self.results: Dict[int, Dict[int, EvalResult]] = {}
+        # Position-keyed cache of prior evaluations. When the user steps back
+        # / forward / navigates to a position they previously evaluated, we
+        # restore results from here instead of showing empty cells.
+        # Key: opaque tuple returned by _position_key().
+        self._eval_cache: Dict[tuple, Dict[int, Dict[int, EvalResult]]] = {}
         # Horizontal scroll (column offset) for the eval area
         self.column_scroll = 0
         # Vertical scroll offset (in pixels) applied to each visible column
@@ -98,6 +103,12 @@ class App:
             "cells_done": 0,
             "cells_total": 0,
         }
+        # Stop flag: set from UI when Stop button pressed; consulted by
+        # mcts_search's should_stop hook. Cleared before each new model.
+        self._stop_current_model = threading.Event()
+        # Rect of the stop button in the progress overlay — populated each
+        # frame when overlay is drawn; used to detect clicks.
+        self._stop_button_rect: Optional[pygame.Rect] = None
         self._eval_thread: Optional[threading.Thread] = None
         self._eval_results: Optional[Dict[int, Dict[int, EvalResult]]] = None
         self._eval_error: Optional[str] = None
@@ -126,16 +137,31 @@ class App:
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    # Ignore clicks while eval thread is running to avoid
-                    # accidentally editing the position mid-evaluation.
-                    if self._eval_thread and self._eval_thread.is_alive():
+                    eval_running = (self._eval_thread
+                                    and self._eval_thread.is_alive())
+                    # Scroll wheel always works — user needs to browse cells
+                    # while eval is running.
+                    if event.button in (4, 5):
+                        direction = -1 if event.button == 4 else 1
+                        self._handle_scroll(event.pos, direction)
+                        continue
+                    if eval_running:
+                        # During eval, only Stop button and column arrows
+                        # accept clicks. Everything else could mutate state.
+                        if event.button == 1:
+                            if (self._stop_button_rect and
+                                    self._stop_button_rect.collidepoint(event.pos)):
+                                self._stop_current_model.set()
+                                self.status_message = ("Stopping current "
+                                                       "model...")
+                            else:
+                                self._handle_scroll_arrows(*event.pos)
                         continue
                     if event.button == 1:
                         self._handle_click(event.pos)
-                    elif event.button in (4, 5):
-                        direction = -1 if event.button == 4 else 1
-                        self._handle_scroll(event.pos, direction)
                 elif event.type == pygame.KEYDOWN:
+                    # Arrow keys only affect display scrolling — safe during
+                    # eval since they don't mutate position state.
                     if event.key == pygame.K_LEFT:
                         self.column_scroll = max(0, self.column_scroll - 1)
                     elif event.key == pygame.K_RIGHT:
@@ -152,13 +178,73 @@ class App:
 
         pygame.quit()
 
+    # ── Evaluation cache ───────────────────────────────────────────────────
+
+    def _position_key(self) -> tuple:
+        """Hashable identity of the current position for eval caching.
+
+        In game_setup mode the position is fully determined by the move
+        history up to step_position. In construction mode we hash the
+        board grid + current player + halfmove/fullmove counters + en
+        passant target. Two branches that reach the same board state may
+        still get different keys if the move sequence differs; that's the
+        correct behavior since the model's history planes depend on the
+        move sequence.
+        """
+        if self.state.mode == Mode.GAME_SETUP:
+            moves = self.state.move_history[:self.state.step_position]
+            return ("game_setup",
+                    self.state.step_position,
+                    tuple(str(m) for m in moves))
+        # Construction mode: canonical board hash
+        game = self.state.get_game()
+        pieces = []
+        for r in range(8):
+            for f in range(8):
+                p = game.board.grid[r][f]
+                if p is not None:
+                    pieces.append((
+                        r, f,
+                        getattr(p.piece_type, "value", p.piece_type),
+                        getattr(p.color, "value", p.color),
+                        bool(p.has_moved),
+                    ))
+        ep = game.board.en_passant_target
+        return ("construction",
+                tuple(pieces),
+                getattr(game.current_player, "value", game.current_player),
+                game.board.halfmove_clock,
+                game.board.fullmove_number,
+                (ep.rank, ep.file) if ep is not None else None,
+                )
+
+    def _restore_or_clear_results(self) -> None:
+        """Called after any state change that could invalidate results.
+
+        Restores previously cached results for this position if available,
+        otherwise clears self.results. Resets scroll to top of the (new)
+        cell layout.
+        """
+        cached = self._eval_cache.get(self._position_key())
+        self.results = cached if cached is not None else {}
+        self.column_scroll = 0
+        self.vert_scroll = 0
+
+    def _cache_current_results(self) -> None:
+        """Save self.results to the cache under the current position key."""
+        if self.results:
+            self._eval_cache[self._position_key()] = self.results
+
     def _poll_eval_thread(self) -> None:
         """Called each frame from main. Reap results if the worker finished."""
         if self._eval_thread is None:
             return
         if self._eval_thread.is_alive():
             return
-        # Worker finished — pull results / error and clear.
+        # Worker finished — pull results / error and clear. Because live
+        # updates were streaming into self.results during the run, the final
+        # eval_results dict may be an extension; take it if present so we
+        # capture any late-fired checkpoint results.
         self._eval_thread = None
         if self._eval_error is not None:
             self.status_message = f"Evaluation error: {self._eval_error}"
@@ -167,10 +253,12 @@ class App:
             self.results = self._eval_results
             self._eval_results = None
             self.status_message = "Evaluation complete."
-            self.column_scroll = 0
-            self.vert_scroll = 0
+            # Persist to cache so we can restore on step-back/-forward.
+            self._cache_current_results()
         with self._progress_lock:
             self._progress["active"] = False
+        self._stop_current_model.clear()
+        self._stop_button_rect = None
 
     # ── Event handling ─────────────────────────────────────────────────────
 
@@ -229,7 +317,7 @@ class App:
                 self.state.remove_piece(sq)
             else:
                 self.state.place_piece(sq, pt, col)
-            self.results = {}   # invalidate cached results
+            self._restore_or_clear_results()
             self.selected_square = None
             return
 
@@ -252,7 +340,7 @@ class App:
             ok = self.state.make_move(self.selected_square, sq, promotion=promo)
             self.selected_square = None
             if ok:
-                self.results = {}   # invalidate
+                self._restore_or_clear_results()
 
     # ── Button dispatch ────────────────────────────────────────────────────
 
@@ -263,22 +351,22 @@ class App:
             new_mode = (Mode.CONSTRUCTION if self.state.mode == Mode.GAME_SETUP
                         else Mode.GAME_SETUP)
             self.state = PositionState(new_mode)
-            self.results = {}
+            self._restore_or_clear_results()
             self.selected_square = None
             self.status_message = f"Switched to {new_mode.value} mode"
         elif action == ACT_SET_TURN_W:
             self.state.set_current_player(Color.WHITE)
-            self.results = {}
+            self._restore_or_clear_results()
         elif action == ACT_SET_TURN_B:
             self.state.set_current_player(Color.BLACK)
-            self.results = {}
+            self._restore_or_clear_results()
         elif action == ACT_STEP_BACK:
             if self.state.step_back():
-                self.results = {}
+                self._restore_or_clear_results()
                 self.selected_square = None
         elif action == ACT_STEP_FWD:
             if self.state.step_forward():
-                self.results = {}
+                self._restore_or_clear_results()
                 self.selected_square = None
         elif action == ACT_SAVE:
             self._save_position()
@@ -326,7 +414,7 @@ class App:
             root.destroy()
             if path:
                 self.state = PositionState.load_json(path)
-                self.results = {}
+                self._restore_or_clear_results()
                 self.selected_square = None
                 self.status_message = f"Loaded {os.path.basename(path)}"
         except Exception as e:
@@ -370,6 +458,13 @@ class App:
             self._progress["sims_done"] = 0
             self._progress["sims_total"] = 0
 
+        # Clear stop flag from any previous run and reset live results.
+        self._stop_current_model.clear()
+        # Show live-updating results as they stream in. Start empty.
+        self.results = {}
+        self.column_scroll = 0
+        self.vert_scroll = 0
+
         def _on_progress(stage, label, sim_count, sims_done, sims_total):
             with self._progress_lock:
                 if stage == "start":
@@ -377,17 +472,32 @@ class App:
                     self._progress["sim_count"] = sim_count
                     self._progress["sims_done"] = 0
                     self._progress["sims_total"] = sims_total
+                    # Starting a new model — clear any pending stop signal
+                    # so it only applies to the model it was pressed for.
+                    self._stop_current_model.clear()
                 elif stage == "progress":
                     self._progress["sims_done"] = sims_done
                     self._progress["sims_total"] = sims_total
                 elif stage == "done":
                     self._progress["cells_done"] += 1
 
+        def _on_live(model_index, cell_sim_count, partial_result):
+            # Update the visible results dict incrementally. Safe because
+            # only this worker thread writes to self.results while eval is
+            # active, and the main thread only reads it for drawing.
+            per_model = self.results.setdefault(model_index, {})
+            per_model[cell_sim_count] = partial_result
+
+        def _should_stop():
+            return self._stop_current_model.is_set()
+
         def _worker():
             try:
                 self._eval_results = self.model_mgr.evaluate(
                     game_snapshot, model_indices, sim_counts,
                     progress_callback=_on_progress,
+                    live_callback=_on_live,
+                    should_stop_current=_should_stop,
                 )
                 self._eval_error = None
             except Exception as e:
@@ -484,15 +594,11 @@ class App:
         if not active:
             return
 
-        # Dim the whole screen slightly
-        dim = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-        dim.fill((0, 0, 0, 70))
-        self.screen.blit(dim, (0, 0))
-
-        # Panel centered on screen
-        pw, ph = 460, 150
-        px = (SCREEN_W - pw) // 2
-        py = (SCREEN_H - ph) // 2
+        # Panel at bottom-left (below the board). No screen dim — user needs
+        # to see and scroll cells while eval is running.
+        pw, ph = 460, 155
+        px = BOARD_X
+        py = SCREEN_H - ph - 12
         pygame.draw.rect(self.screen, (250, 250, 252),
                          pygame.Rect(px, py, pw, ph))
         pygame.draw.rect(self.screen, (60, 60, 80),
@@ -507,6 +613,8 @@ class App:
         # Cell-level progress (which model & sim setting)
         if sim_count == 1:
             sim_label = "raw NN"
+        elif sim_count >= SIM_UNLIMITED:
+            sim_label = "unlimited"
         else:
             sim_label = f"{sim_count} sims"
         text1 = font_r.render(
@@ -520,27 +628,63 @@ class App:
             True, (30, 30, 30))
         self.screen.blit(text2, (px + 16, py + 62))
 
-        # Sim-level progress bar
-        if sims_total > 0:
-            frac = sims_done / max(sims_total, 1)
-        else:
-            frac = 0.0
+        # Sim-level progress bar. In unlimited mode we can't show a
+        # fraction, so display an animated indeterminate stripe instead.
         bar_x = px + 16
         bar_y = py + 92
         bar_w = pw - 32
         bar_h = 18
+        is_unlimited = sims_total >= SIM_UNLIMITED
         pygame.draw.rect(self.screen, (225, 225, 230),
                          pygame.Rect(bar_x, bar_y, bar_w, bar_h))
-        pygame.draw.rect(self.screen, (60, 120, 200),
-                         pygame.Rect(bar_x, bar_y,
-                                     int(bar_w * frac), bar_h))
+        if is_unlimited:
+            # Moving stripe: a small filled band that scrolls across the bar
+            # once every ~1.6s. Purely visual — no completion signal.
+            stripe_w = bar_w // 5
+            t = (pygame.time.get_ticks() % 1600) / 1600.0
+            sx = bar_x + int((bar_w + stripe_w) * t) - stripe_w
+            visible = pygame.Rect(
+                max(bar_x, sx), bar_y,
+                min(stripe_w, bar_x + bar_w - max(bar_x, sx)),
+                bar_h,
+            )
+            if visible.width > 0:
+                pygame.draw.rect(self.screen, (60, 120, 200), visible)
+        else:
+            if sims_total > 0:
+                frac = sims_done / max(sims_total, 1)
+            else:
+                frac = 0.0
+            pygame.draw.rect(self.screen, (60, 120, 200),
+                             pygame.Rect(bar_x, bar_y,
+                                         int(bar_w * frac), bar_h))
         pygame.draw.rect(self.screen, (100, 100, 120),
                          pygame.Rect(bar_x, bar_y, bar_w, bar_h), width=1)
-        bar_label = font_r.render(
-            f"{sims_done}/{sims_total} sims" if sims_total > 1
-            else "raw NN eval",
-            True, (30, 30, 30))
+        if is_unlimited:
+            bar_label_text = f"{sims_done} sims (unlimited)"
+        elif sims_total > 1:
+            bar_label_text = f"{sims_done}/{sims_total} sims"
+        else:
+            bar_label_text = "raw NN eval"
+        bar_label = font_r.render(bar_label_text, True, (30, 30, 30))
         self.screen.blit(bar_label, (bar_x + 4, bar_y + 20))
+
+        # Stop button (right side of the panel, below the bar). Clicking it
+        # stops the CURRENT model's MCTS and moves on to the next model.
+        stopping = self._stop_current_model.is_set()
+        btn_w, btn_h = 90, 24
+        btn_x = px + pw - btn_w - 16
+        btn_y = py + ph - btn_h - 12
+        btn_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+        self._stop_button_rect = btn_rect
+        btn_bg = (200, 60, 60) if not stopping else (150, 100, 100)
+        btn_fg = (255, 255, 255)
+        pygame.draw.rect(self.screen, btn_bg, btn_rect, border_radius=4)
+        pygame.draw.rect(self.screen, (80, 20, 20), btn_rect,
+                         width=1, border_radius=4)
+        btn_label = font_r.render(
+            "Stopping..." if stopping else "Stop", True, btn_fg)
+        self.screen.blit(btn_label, btn_label.get_rect(center=btn_rect.center))
 
     def _visible_column_indices(self) -> List[int]:
         return self.settings.selected_model_indices()
