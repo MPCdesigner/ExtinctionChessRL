@@ -127,7 +127,8 @@ ap-E2lmPbu  693-696    Modal A10G     Jun 29 08:55 EDT    Jun 29 14:43 EDT    ~5
 583395    893-898   delta-slurm1  Jul 27 14:32 EDT   Jul 28 ~11:50 EDT  ~21h20m   COMPLETED  **First job under FULLY correct MCTS**: both facb668 + VL sign fix (Jul 27) applied. 6 iters at ~10.4-13.3k s (real MCTS work, no more fake speedup). **Recovery signals massive**: W-bias corrected 82% → 52%; policy loss dropped 0.37 (2.516 → 2.148); games grew 37% longer; buffer up to 69k positions. **Helpers still failed all 6 iters** — trpro-slurm1 STILL drained (day 14+), delta-slurm1 CPUs exhausted by main job (only 2 idle CPUs, helper needs 8). Auto-resubmit → 583705.
 583705    899-904   delta-slurm1  Jul 28 ~11:50 EDT  Jul 29 ~10:30 EDT  ~22h37m   COMPLETED  Auto-resubmit from 583395. 6 iters at ~13-14k s each. **iter 900 auto-benchmark verdict SPECTACULAR**: vs iter 100 = 76%, vs iter 890 = 71.5%, vs iter 810 gap-fill = 59.5% (+22% recovery, regression fully repaired + surpassed), tactical = 79% (@200/@400 both 100%). W-bias stabilized around 55% (iter 902 was 50.5% — near-perfect balance). Post-recovery now incremental (policy loss dropped 0.07 vs 0.37 during rapid recovery). Helpers STILL failed all 6 iters. Auto-resubmit → 584357.
 584357    905-909   delta-slurm1  Jul 29 ~10:30 EDT  Jul 30 ~09:00 EDT  ~22h30m   COMPLETED  Auto-resubmit from 583705. 5 iters at ~14k s/iter. Post-recovery stabilization confirmed: W-bias locked at 54-57%, policy loss oscillating in narrow band (2.068-2.089), value loss drifting down (0.180→0.170). Games consistently 14-15k positions. Buffer stable at 74-76k. Helpers STILL failed all 5 iters (trpro-slurm1 day 16+ drained). Auto-resubmit → 584512.
-584512    910-      delta-slurm1  Jul 30 ~09:00 EDT  (running)   —          RUNNING    Auto-resubmit from 584357. iter 910 will complete ~4h in and fire auto-benchmark battery.
+584512    910-914   delta-slurm1  Jul 30 ~09:00 EDT  Jul 31 ~04:15 EDT  ~19h15m   COMPLETED  Auto-resubmit from 584357. 5 iters at ~13.5-14k s each. iter 910 hit ★ 100% and fired auto-benchmark: **iter 910 = new strongest checkpoint, beats iter 900 (61.3%), iter 810 gap-fill (64.8%), iter 100 (85.2%)**. Post-iter-910 iters 911-914 show continued stable incremental training. Helpers STILL failed all 5 iters. Auto-resubmit → 584558.
+584558    915-      delta-slurm1  Jul 31 ~04:15 EDT  (running)   —          RUNNING    Auto-resubmit from 584512. iter 920 = 6 iters in, ~22-23h. Deadline for Modal helper pipeline deployment if we want iter 920 boost captured.
 
 
 Log Access
@@ -243,5 +244,6 @@ tail -10 ~/train_583372.log                         # 583372   iters 891-892 (CA
 tail -10 ~/train_583395.log                         # 583395   iters 893-898 (first FULLY-fixed MCTS job; MASSIVE recovery signals across all metrics)
 tail -10 ~/train_583705.log                         # 583705   iters 899-904 (iter 900 benchmark showed +22% swing vs iter 810; recovery complete)
 tail -10 ~/train_584357.log                         # 584357   iters 905-909 (post-recovery stabilization; policy oscillating narrow, value drifting down)
-tail -10 ~/train_584512.log                         # 584512   iters 910+    (running; iter 910 auto-benchmark ~4h in)
+tail -10 ~/train_584512.log                         # 584512   iters 910-914 (iter 910 benchmark: new strongest checkpoint, beats iter 810 gap-fill 64.8%)
+tail -10 ~/train_584558.log                         # 584558   iters 915+    (running; iter 920 auto-benchmark ~22-23h in)
  

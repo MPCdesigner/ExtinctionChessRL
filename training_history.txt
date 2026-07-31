@@ -904,3 +904,8 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  907  220  178   2    14856      0   13921.6s  106.5s   10482824   2.2514  2.0765  0.1749  W=55%; policy 2.077 (small bounce). Value 0.175 (drifting down).
  908  216  183   1    14817      0   14003.9s  110.3s   10475812   2.2584  2.0872  0.1711  W=54%; policy 2.087. Value 0.171.
  909  228  170   2    14270      0   13231.9s  106.7s   10047659   2.2588  2.0892  0.1696  W=57%; policy 2.089. Value 0.170. **Post-recovery stabilization confirmed**: policy oscillating in narrow band (2.068-2.089), value trickling down (0.180→0.170), W-bias locked at 54-57%. Normal incremental training. Wall-time exit; auto-resubmit 584512.
+ 910  218  179   3    14411      0   13426.3s  102.9s   10142678   2.2621  2.0864  0.1757  W=55%; policy 2.086. ★ new best 100% vs random; **AUTO-BENCHMARK FIRED**. **RESULT: vs iter 100 = 85.2% (+9% from iter 900), vs iter 900 = 61.3% (+23%), vs iter 810 gap-fill = 64.8% (+5% from iter 900). iter 910 beats every opponent in the sweep — new strongest checkpoint.** Tactical total 72% (@400 = 95%). Win-taking best in lineage.
+ 911  207  192   1    14686      0   13606.7s  102.2s   10332922   2.2707  2.0982  0.1726  W=52%; policy 2.098. Small oscillation in the narrow band.
+ 912  224  173   3    15021      0   14064.5s  107.1s   10584466   2.2686  2.0956  0.1730  W=56%; policy 2.096. 15k positions (biggest so far).
+ 913  218  181   1    14502      0   13655.6s  102.9s   10200313   2.2604  2.0857  0.1747  W=55%; policy 2.086.
+ 914  240  159   1    14360      0   13629.7s  102.4s   10109099   2.2539  2.0823  0.1717  W=60%; policy 2.082. Wall-time exit; auto-resubmit 584558. iter 920 = 6 iters away, ~22-23h.
