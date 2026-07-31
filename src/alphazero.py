@@ -12,6 +12,7 @@ The C++ engine (_ext_chess) handles all game logic and board encoding.
 
 import math
 import random
+import re
 import time
 import os
 import json
@@ -27,6 +28,23 @@ import torch.nn.functional as F
 
 from extinction_chess import ExtinctionChess, Color, PieceType, Position
 from state_encoder import StateEncoder
+
+
+# Replay-buffer filename convention. Accepts cluster's own 'iter_<N>.npz' and
+# also externally-produced variants like 'iter_<N>_modalA1.npz' from the
+# Modal helper pipeline. Tag suffix is optional; if present it must be
+# non-empty alphanumeric (no dots, underscores in the tag itself, to keep the
+# parse unambiguous). Behavior with zero external files == identical to the
+# original strict pattern.
+_REPLAY_ITER_RE = re.compile(r"^iter_(\d+)(?:_[A-Za-z0-9]+)?\.npz$")
+
+
+def _replay_iter_num(fname):
+    """Extract iter number from a replay-buffer filename. Returns None if
+    the name doesn't match. Used both for the loader (which files to read)
+    and cleanup (which files to delete when they age out of K-buffer)."""
+    m = _REPLAY_ITER_RE.match(fname)
+    return int(m.group(1)) if m else None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -980,6 +998,8 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
                 progress_callback=None,
                 checkpoint_sims=None,
                 checkpoint_callback=None,
+                state_callback=None,
+                should_stop=None,
                 prev_root=None,
                 return_root=False):
     """
@@ -1003,6 +1023,19 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
     instead of running MCTS from scratch for each sim setting.
 
     Kept out of the hot path when None (checked once per batch).
+
+    state_callback: optional callable, invoked every batch AFTER checkpoint
+    processing with signature
+        state_callback(sims_done, move_visits, refined_value)
+    Same payload shape as checkpoint_callback. Enables live UI updates of
+    the current tree state without waiting for a checkpoint threshold.
+    Kept out of the hot path when None.
+
+    should_stop: optional callable returning bool. Consulted at the END of
+    each batch. If it returns True, MCTS returns immediately with the
+    current state. Useful for interactive stop from a UI without waiting
+    for num_simulations to complete. The returned move_visits reflect
+    whatever the tree looked like at stop time.
 
     prev_root: optional MCTSNode from an earlier mcts_search(return_root=True)
     call, already promoted by the caller (see descend_root). If provided and
@@ -1191,6 +1224,20 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
                     _cp_val = root_value
                 _cp_visits = [(ch.move, ch.visit_count) for ch in root.children]
                 checkpoint_callback(cp, _cp_visits, _cp_val)
+
+        # State hook: fire every batch with current tree snapshot for live UI.
+        if state_callback is not None:
+            if root.visit_count > 0:
+                _st_white_q = root.value_sum / root.visit_count
+                _st_val = _st_white_q if current == Color.WHITE else -_st_white_q
+            else:
+                _st_val = root_value
+            _st_visits = [(ch.move, ch.visit_count) for ch in root.children]
+            state_callback(sims_done, _st_visits, _st_val)
+
+        # Stop hook: allow interactive early termination.
+        if should_stop is not None and should_stop():
+            break
 
     # MCTS-refined root value (from current player's perspective).
     # root.value_sum tracks backprop totals in white's perspective.
@@ -1889,15 +1936,16 @@ def train(
                 policies=np.array(all_policies, dtype=np.float32),
                 values=np.array(all_values, dtype=np.float32),
             )
-            # Cleanup files older than replay_buffer_size iterations
+            # Cleanup files older than replay_buffer_size iterations. Uses
+            # the shared _replay_iter_num() helper so Modal-tagged files
+            # (iter_<N>_modalA1.npz etc.) get deleted alongside iter_<N>.npz.
             cutoff = iter_num - replay_buffer_size + 1
             for fname in os.listdir(replay_buffer_dir):
-                if fname.startswith("iter_") and fname.endswith(".npz"):
+                file_iter = _replay_iter_num(fname)
+                if file_iter is not None and file_iter < cutoff:
                     try:
-                        file_iter = int(fname[5:-4])
-                        if file_iter < cutoff:
-                            os.remove(os.path.join(replay_buffer_dir, fname))
-                    except ValueError:
+                        os.remove(os.path.join(replay_buffer_dir, fname))
+                    except OSError:
                         pass
             rb_time = time.time() - t_rb
             print(f"         replay buffer: wrote iter_{iter_num}.npz "
@@ -1906,27 +1954,57 @@ def train(
             # Phase 2: load buffer contents for training (replaces current iter's data)
             if replay_buffer_size > 1:
                 t_rb_load = time.time()
-                # Match strict iter_<N>.npz pattern so we don't pick up
-                # orphans like iter_<N>.npz.tmp.npz from old buggy runs.
-                files = sorted([
-                    f for f in os.listdir(replay_buffer_dir)
-                    if f.startswith("iter_") and f.endswith(".npz")
-                    and f[5:-4].isdigit()
-                ])
+                # Accept cluster's own 'iter_<N>.npz' and Modal helper
+                # variants like 'iter_<N>_modalA1.npz'. See _REPLAY_ITER_RE.
+                # Files sorted by (iter_num, filename) for stable, reproducible
+                # concatenation order across runs.
+                files = sorted(
+                    [f for f in os.listdir(replay_buffer_dir)
+                     if _replay_iter_num(f) is not None],
+                    key=lambda f: (_replay_iter_num(f), f),
+                )
                 buf_boards, buf_policies, buf_values = [], [], []
+                skipped = 0
                 for fname in files:
                     # Use context manager so the NpzFile zip handle closes
                     # immediately — needed for Modal Volume reload to work
                     # since it refuses to refresh while files are still open.
-                    with np.load(os.path.join(replay_buffer_dir, fname)) as data:
-                        buf_boards.append(data["boards"].astype(np.float32))
-                        buf_policies.append(np.asarray(data["policies"]))
-                        buf_values.append(np.asarray(data["values"]))
-                all_boards = np.concatenate(buf_boards)
-                all_policies = np.concatenate(buf_policies)
-                all_values = np.concatenate(buf_values)
+                    # try/except keeps training alive if a single file is
+                    # corrupt (partial write, filesystem hiccup, bad Modal
+                    # delivery). Warning is logged loudly so real corruption
+                    # isn't masked; run just uses whatever loaded OK.
+                    try:
+                        with np.load(os.path.join(replay_buffer_dir, fname)) as data:
+                            buf_boards.append(data["boards"].astype(np.float32))
+                            buf_policies.append(np.asarray(data["policies"]))
+                            buf_values.append(np.asarray(data["values"]))
+                    except Exception as e:
+                        print(f"         [replay buffer] WARNING: skipped "
+                              f"{fname}: {type(e).__name__}: {e}", flush=True)
+                        skipped += 1
+                if buf_boards:
+                    all_boards = np.concatenate(buf_boards)
+                    all_policies = np.concatenate(buf_policies)
+                    all_values = np.concatenate(buf_values)
+                else:
+                    # All files failed — extremely rare. Fall back to the
+                    # in-memory current-iter data (already in all_boards/etc.)
+                    # rather than crash.
+                    print(f"         [replay buffer] WARNING: all files "
+                          f"skipped, falling back to current iter's data only",
+                          flush=True)
                 rb_load_time = time.time() - t_rb_load
-                print(f"         replay buffer: loaded {len(files)} iters, "
+                loaded_files = len(files) - skipped
+                unique_iters = len({_replay_iter_num(f) for f in files})
+                if loaded_files == unique_iters:
+                    # Standard case (one file per iter) — preserve original
+                    # log format for backward compat with history parsing.
+                    summary = f"loaded {unique_iters} iters"
+                else:
+                    summary = f"loaded {loaded_files} files ({unique_iters} iters)"
+                if skipped:
+                    summary += f", SKIPPED {skipped}"
+                print(f"         replay buffer: {summary}, "
                       f"{len(all_boards)} positions total | {rb_load_time:.1f}s")
 
         # ── Consume helper games (recency injection, NOT in K-buffer) ───────
