@@ -909,3 +909,13 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  912  224  173   3    15021      0   14064.5s  107.1s   10584466   2.2686  2.0956  0.1730  W=56%; policy 2.096. 15k positions (biggest so far).
  913  218  181   1    14502      0   13655.6s  102.9s   10200313   2.2604  2.0857  0.1747  W=55%; policy 2.086.
  914  240  159   1    14360      0   13629.7s  102.4s   10109099   2.2539  2.0823  0.1717  W=60%; policy 2.082. Wall-time exit; auto-resubmit 584558. iter 920 = 6 iters away, ~22-23h.
+ 915  235  163   2    13826      0   13075.6s  101.2s    9748441   2.2435  2.0683  0.1751  W=59%; policy 2.068 (new low since iter 887).
+ 916  228  170   2    15092      0   14276.5s  103.1s   10644623   2.2792  2.1081  0.1711  W=57%; policy 2.108. Positions 15k.
+ 917  241  159   0    14757      0   13960.2s  105.5s   10415538   2.2805  2.1080  0.1725  W=60%; policy 2.108 (flat).
+ 918  245  155   0    14495      0   13760.9s  106.1s   10191976   2.2899  2.1209  0.1690  W=61%; policy 2.121.
+ 919  219  179   2    14596      0   13681.2s  104.3s   10238150   2.2947  2.1220  0.1727  W=55%; policy 2.122. Wall-time exit BEFORE iter 920. Auto-resubmit 584712. **iter 920 will be FIRST iter of new job, uses updated alphazero.py (elite/modal loader logging + try/except).**
+ 920  228  170   2    15405      0   14593.5s  104.4s   10832146   2.2800  2.1066  0.1735  W=57%; policy 2.107. ★ new best 100% vs random; **AUTO-BENCHMARK FIRED** (jobs 584719-584732). **Elite Modal batch failed at Modal 2h timeout — zero elite files delivered (0/20). Modal pipeline torn down 2026-08-01.** Cluster training unaffected.
+ 921  241  159   0    15241      0   14300.3s  108.1s   10695286   2.2895  2.1183  0.1711  W=60%; policy 2.118. Loader logging active but no elite/modal files → default log format.
+ 922  232  166   2    14702      0   13785.6s  105.2s   10350253   2.2714  2.1022  0.1692  W=58%; policy 2.102. Value 0.169 (drifting down).
+ 923  244  154   2    14125      0   13474.6s  103.6s    9952504   2.2586  2.0930  0.1656  W=61%; policy 2.093. Value 0.166.
+ 924  227  171   2    15100      0   13990.2s  104.9s   10669288   2.2639  2.0989  0.1650  W=57%; policy 2.099. Value 0.165 (new low). Post-recovery incremental training continues; value loss slowly drifting down while policy loss oscillates narrowly. Wall-time exit; auto-resubmit 584818.

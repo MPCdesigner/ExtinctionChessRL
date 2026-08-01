@@ -36,7 +36,7 @@ from state_encoder import StateEncoder
 # non-empty alphanumeric (no dots, underscores in the tag itself, to keep the
 # parse unambiguous). Behavior with zero external files == identical to the
 # original strict pattern.
-_REPLAY_ITER_RE = re.compile(r"^iter_(\d+)(?:_[A-Za-z0-9]+)?\.npz$")
+_REPLAY_ITER_RE = re.compile(r"^iter_(\d+)(?:_([A-Za-z0-9]+))?\.npz$")
 
 
 def _replay_iter_num(fname):
@@ -45,6 +45,15 @@ def _replay_iter_num(fname):
     and cleanup (which files to delete when they age out of K-buffer)."""
     m = _REPLAY_ITER_RE.match(fname)
     return int(m.group(1)) if m else None
+
+
+def _replay_file_tag(fname):
+    """Extract the tag suffix from a replay-buffer filename, or None if
+    untagged (cluster's own iter_<N>.npz). Tags come from external
+    contributors like the Modal helper pipeline ('modalA1', 'eliteB3',
+    etc.) and let the loader log where positions came from."""
+    m = _REPLAY_ITER_RE.match(fname)
+    return m.group(2) if m else None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1965,6 +1974,11 @@ def train(
                 )
                 buf_boards, buf_policies, buf_values = [], [], []
                 skipped = 0
+                # Track positions by source tag so we can log where the
+                # training data came from (cluster-own, modal helpers,
+                # elite manual runs).
+                positions_by_source = {"cluster": 0, "elite": 0, "modal": 0,
+                                       "other": 0}
                 for fname in files:
                     # Use context manager so the NpzFile zip handle closes
                     # immediately — needed for Modal Volume reload to work
@@ -1975,9 +1989,20 @@ def train(
                     # isn't masked; run just uses whatever loaded OK.
                     try:
                         with np.load(os.path.join(replay_buffer_dir, fname)) as data:
-                            buf_boards.append(data["boards"].astype(np.float32))
+                            b = data["boards"].astype(np.float32)
+                            buf_boards.append(b)
                             buf_policies.append(np.asarray(data["policies"]))
                             buf_values.append(np.asarray(data["values"]))
+                            # Classify source by filename tag for logging.
+                            tag = _replay_file_tag(fname)
+                            if tag is None:
+                                positions_by_source["cluster"] += len(b)
+                            elif tag.startswith("elite"):
+                                positions_by_source["elite"] += len(b)
+                            elif tag.startswith("modal"):
+                                positions_by_source["modal"] += len(b)
+                            else:
+                                positions_by_source["other"] += len(b)
                     except Exception as e:
                         print(f"         [replay buffer] WARNING: skipped "
                               f"{fname}: {type(e).__name__}: {e}", flush=True)
@@ -2004,8 +2029,23 @@ def train(
                     summary = f"loaded {loaded_files} files ({unique_iters} iters)"
                 if skipped:
                     summary += f", SKIPPED {skipped}"
+                # Append per-source breakdown only when non-cluster contributions
+                # exist. Preserves original single-number log format for the
+                # default case (no elite / no modal helper data).
+                external_sources = {k: v for k, v in positions_by_source.items()
+                                    if k != "cluster" and v > 0}
+                if external_sources:
+                    parts = [f"{positions_by_source['cluster']} cluster"]
+                    for k in ("elite", "modal", "other"):
+                        if positions_by_source[k] > 0:
+                            parts.append(f"{positions_by_source[k]} {k}")
+                    breakdown = " + ".join(parts)
+                    positions_str = (f"{len(all_boards)} positions total "
+                                     f"({breakdown})")
+                else:
+                    positions_str = f"{len(all_boards)} positions total"
                 print(f"         replay buffer: {summary}, "
-                      f"{len(all_boards)} positions total | {rb_load_time:.1f}s")
+                      f"{positions_str} | {rb_load_time:.1f}s")
 
         # ── Consume helper games (recency injection, NOT in K-buffer) ───────
         if helpers_enabled and helper_specs:
