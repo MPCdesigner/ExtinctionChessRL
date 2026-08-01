@@ -545,7 +545,128 @@ are NOT durable data.
 
 == MODAL HELPER PIPELINE ==
 
-STATUS: DEPLOYED AND LIVE (as of 2026-07-31).
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CURRENT STATUS (as of 2026-08-01):                                     │
+│  ★ TORN DOWN. Cluster back to functionally pre-Modal state.             │
+│                                                                         │
+│  This section is a HISTORICAL RECORD and a rebuild reference.           │
+│  Everything documented below WORKED (except the elite run) and can be   │
+│  recreated by following the setup steps.                                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+--- TIMELINE + POST-MORTEM ---
+
+  2026-07-30: Pipeline designed. Two Modal accounts (henryliang416525 +
+              bobbyzinger122), $30/mo credit each. Cadence 10, 1 helper
+              per account per event, ~$2/event.
+
+  2026-07-31: Fully deployed. Cluster cron watching every 5 min. First
+              live run scheduled for iter 920.
+
+  2026-07-31: Plan expanded — instead of the default 6-helper boost on
+              iter 920 (as an experiment), we designed an "elite" one-off
+              batch: 20 helpers × 100 games × 3200 sims/move on A10G,
+              targeting ~2000 elite games for iter 920's K=5 slot.
+              Would train iters 921-924. Budget for it: ~$34.
+
+  2026-08-01 00:03 UTC: Elite batch fired via ~/run_elite_iter920.sh.
+              All 20 helpers launched successfully. Both accounts saturated
+              their 10-GPU workspace caps.
+
+  2026-08-01 02:02 UTC: TOTAL FAILURE. All 20 helpers hit Modal's per-
+              function timeout of 7200s (2h) before generating enough games
+              to write the .npz. Modal cancelled all containers. Zero
+              output files. ~$44 of credit burned.
+
+              ROOT CAUSE: modal_helper.py had `timeout=7200` hardcoded,
+              sized for the DEFAULT config (200 games × 800 sims → ~1h
+              actual). For the elite config (100 games × 3200 sims →
+              ~2.1h actual), it was too tight. Should have bumped it to
+              10800 before firing, or reduced games-per-helper to ~80.
+              Missed this during elite planning. My (Claude's) oversight.
+
+  2026-08-01 02:30 UTC: Pipeline torn down. User accepted the loss and
+              chose to clean up rather than retry with $3-remaining credit.
+
+
+--- WHAT WAS REMOVED FROM CLUSTER ---
+
+  - Modal CLI (`pip uninstall modal`)
+  - Modal tokens (`~/.modal.toml`)
+  - Modal apps stopped on both accounts (via `modal app stop`)
+  - Modal Volumes deleted on both accounts (`extinction-chess-ckpts`,
+    `extinction-chess-helper-outputs`)
+  - Crontab entry
+  - Files: ~/extinction-chess/modal_helper.py, modal_helper_cron.py,
+    modal_helper_config.json, modal_helper_state.json, MODAL_DISABLED,
+    ~/modal_helper_cron.log, ~/elite_iter920.log, ~/run_elite_iter920.sh
+
+
+--- WHAT STAYED ON CLUSTER (INTENTIONAL) ---
+
+  - src/alphazero.py loader change: accepts `iter_<N>_<tag>.npz` files,
+    logs per-source position counts (cluster/elite/modal/other), and
+    wraps individual np.load() calls in try/except. Zero effect when no
+    external files present. Useful for future ad-hoc elite runs.
+
+  - ~/.bashrc has `export PATH="$HOME/.local/bin:$PATH"` — harmless.
+
+  - Some Modal Python dependencies (aiohttp, grpclib, etc.) still in
+    ~/.local/lib/python3.10/site-packages/. Harmless.
+
+
+--- WHAT STAYED EXTERNALLY ---
+
+  - Modal accounts (henryliang416525, bobbyzinger122) still exist.
+    Dashboards show a history of stopped apps. Login credentials known
+    to user (email, password). Free-tier credits reset monthly.
+
+  - GitHub commits: 5aa2c97, 319b256, da35ed5, 3807611, 57a6343, 121e4f2,
+    6e0f12b, 16bcb28, 54f31c8 — all pushed to origin/history-planes.
+    Pre-Modal rollback anchor: da35ed5. Modal pipeline commits:
+    121e4f2 (initial), 6e0f12b (deploy fixes + docs), 54f31c8 (num_sims
+    config + docs).
+
+
+--- IF YOU'RE REBUILDING THIS IN THE FUTURE ---
+
+  Full setup steps preserved in the "FULL SETUP RECREATION" section below.
+  All designs, gotchas, and known bugs from the July run are documented.
+
+  LESSONS LEARNED (must incorporate on rebuild):
+
+  1. Modal `timeout` parameter in modal_helper.py MUST be sized to match
+     the LONGEST expected helper run, not the default. Elite runs at 3200
+     sims/move take ~2.1h — set timeout to at least 10800s (3h) with
+     margin. Failing this: total data loss (no partial writes).
+
+  2. Modal free tier caps at 10 GPUs per workspace. If you want 20 total
+     concurrent helpers, you need 2 workspaces (2 accounts).
+
+  3. Non-interactive scripts don't source ~/.bashrc — always `export PATH`
+     at the top of scripts that call `modal`. Otherwise: "modal: command
+     not found" for every invocation.
+
+  4. `set -e` + `wait` on parallel background helpers = script exits on
+     any single failure BEFORE the download loop. Remove `set -e` for
+     graceful partial-success handling.
+
+  5. Modal CLI syntax as of 1.5.3:
+       - `modal profile create <name>` does NOT exist. Profile is created
+         via `modal token set --token-id ... --token-secret ...` (auto-
+         named from workspace) or with `--profile <name>` flag.
+       - `modal token check` does NOT exist. Use `modal app list` to
+         verify auth.
+       - `--profile <name>` is NOT a top-level flag. Use env var:
+         `MODAL_PROFILE=<name> modal <subcommand>`.
+
+  6. Modal function `timeout` bites at 2h. Modal cancels the task. NO
+     partial .npz gets written. If you must generate long-running data,
+     either raise timeout OR chunk output within the helper.
+
+
+--- ORIGINAL PIPELINE DESIGN (STILL VALID IF REBUILT) ---
+
 Cluster-side cron daemon runs Modal helpers every ×10 iter, delivers
 extra ~400 games/iter (or more with per-iter overrides) into replay_buffer/.
 Files use `iter_<N>_modal<A|B><i>.npz` naming; cluster loader accepts them
@@ -557,7 +678,6 @@ Combined budget: $60/month. Cost per default-config event: ~$2 total
 num_helpers_per_account=3: ~$6 total.
 
 Rollback anchor on GitHub: commit `da35ed5` is the pre-Modal state.
-Emergency: see EMERGENCY REVERT section below.
 
 
 --- WHY WE BUILT THIS ---
@@ -1052,3 +1172,245 @@ For sustained default cadence (every ×10 iter), that's plenty of runway.
 
   Account A: https://modal.com/apps/henryliang416525/main/deployed/extinction-chess-helper
   Account B: https://modal.com/apps/bobbyzinger122/main/deployed/extinction-chess-helper
+
+
+== ELITE MANUAL BATCH (one-off high-quality data injection) ==
+
+CONCEPT: pick a strong ×10 checkpoint (e.g. iter 920). Generate a large
+batch of self-play games with EXTREME MCTS depth (3200 sims/move, vs.
+training default 800). Drop the resulting .npz files into replay_buffer/
+labeled with the checkpoint's iter number. The K=5 buffer mechanism then
+naturally uses that data for the next 4 iters (iters N+1 through N+4)
+before it rolls out at iter N+5 cleanup. No cluster code changes needed.
+
+WHY: at very high sims, MCTS discovers stronger moves than the raw model
+priors. Training on these targets teaches the model to internalize search
+insights, effectively a light form of distillation. One-off, not routine.
+
+WHY MANUAL: cost is 3-4x default helpers per event (~$34 vs ~$10). Doing
+this every ×10 iter would burn $30/mo credit fast. Do only for specific
+milestone iters when you have leftover budget to spend.
+
+FIRST RUN: iter 920 elite batch, 2026-07-31 evening (last day of July
+free credit). 20 helpers total (10/acct) × 100 games × 3200 sims/move
+on A10G. ~$34 estimated total.
+
+STATUS (as of context compaction 2026-08-01 ~00:20 UTC):
+  - Elite batch RUNNING on Modal, 19+ minutes elapsed of ~2.5h expected
+  - Both accounts confirmed via dashboard: 10 containers running each
+  - Credits: $26.09 remaining on B (started $30). ~$3.91 burn/19min
+    → linear extrap to ~$30.87 by end. Might barely bust cap on last
+    1-2 helpers. Cluster training absorbs whatever lands.
+  - Cluster job 584712 running iter 921 gen (iter 920 already saved,
+    benchmark battery jobs 584719-584732 fired for iter 920)
+  - Terminal is spamming Modal helper logs — user could Ctrl-Z + bg +
+    disown to background OR open new SSH session. Just waiting works too.
+  - Modal daemon PAUSED via MODAL_DISABLED sentinel — kept paused for
+    foreseeable future (Modal used only for ad-hoc elite runs from now)
+  - iter 920 override was REMOVED from modal_helper_config.json (elite
+    replaces the automated boost)
+
+
+--- SCRIPT LOCATION AND CONTENTS ---
+
+  ~/run_elite_iter920.sh  (on cluster)
+
+  Runs on cluster login node. Fires 20 helpers (10 per account) in
+  parallel via `&` + `wait`. Each helper generates 100 games at 3200
+  sims. When helpers finish, downloads all 20 .npz to replay_buffer/
+  atomically (.part → mv rename), marks iter 920 in state file,
+  cleans up Modal Volumes.
+
+
+--- SETUP GOTCHAS (from July 31 initial run) ---
+
+Three surprises found during first elite run — future scripts should
+build these in from the start:
+
+1. `export PATH="$HOME/.local/bin:$PATH"` at TOP of script.
+   Non-interactive scripts don't source ~/.bashrc, so `modal` isn't
+   in PATH inside script. Without this, every `modal` invocation dies
+   with "command not found" and produces zero elite data. (See fix
+   applied on 2026-07-31 in `~/run_elite_iter920.sh`.)
+
+2. `set -e` MUST be removed from parallel-helper scripts.
+   If ANY of the 20 background `modal run` invocations returns non-zero
+   (e.g. transient Modal API glitch on one helper), `wait` returns
+   non-zero, and `set -e` kills the script BEFORE the download loop.
+   Result: all 19 successful helpers' outputs stranded on Modal Volume.
+   Fix: remove `set -e`, tolerate partial failures, download what
+   actually exists. (See sed fix applied on 2026-07-31.)
+
+3. Modal free tier is HARD-CAPPED at 10 GPUs per workspace (visible
+   in workspace metrics as "Limit hit" when at 10/10). This drove the
+   20-helper design: 10 per account × 2 accounts = 20. Can't launch
+   more than 10 concurrent per account. If you try, they queue.
+
+
+--- RUNNING AN ELITE BATCH FOR A DIFFERENT ITER (future template) ---
+
+Adapt ~/run_elite_iter920.sh for a new iter:
+
+  cp ~/run_elite_iter920.sh ~/run_elite_iter<N>.sh
+  sed -i 's/ITER=920/ITER=<N>/g' ~/run_elite_iter<N>.sh
+  sed -i 's/iter920/iter<N>/g' ~/run_elite_iter<N>.sh    # rename log file
+  chmod +x ~/run_elite_iter<N>.sh
+
+Then wait for iter <N> to appear in models/, and fire:
+  ~/run_elite_iter<N>.sh 2>&1 | tee ~/elite_iter<N>.log
+
+Watch first 30 seconds — you should see:
+  - 2× "✓ Uploaded file..." lines (checkpoint uploaded to both accounts)
+  - 20× "✓ Initialized. View run at https://modal.com/apps/..." lines
+  - Then log output as helpers compile + run
+If instead you see "modal: command not found", the PATH export is missing.
+
+
+--- WHEN AN ELITE RUN IS IN PROGRESS ---
+
+Modal dashboard check (each account, in browser):
+  - Should see 10 containers running under extinction-chess-helper
+  - "Workspace metrics → Total GPUs: 10 / Limit: 10 (Limit hit)" is
+    NORMAL, not an error — it means we're using every GPU slot
+
+Cluster terminal logs may show heartbeat warnings like:
+  [modal-client] Modal Client → Modal Worker heartbeat attempts have been
+  failing for over X minutes. Container will eventually be marked unhealthy.
+These are CLIENT-SIDE network warnings, not helper failures. The Modal
+helpers on Modal's compute continue running independently. Only if
+heartbeats fail for 60+ minutes AND Modal decides to cancel would we
+lose helpers. As long as dashboard shows containers alive, ignore.
+
+If terminal is unusable (log spam) and you need shell:
+  - Ctrl+Z (suspends)
+  - bg (backgrounds)
+  - disown (detaches so it survives SSH disconnect)
+  OR open a fresh SSH session in a new terminal window.
+
+DO NOT Ctrl+C — kills local script AND its download step. Helpers on
+Modal keep running, but you'd have to manually pull the .npz files.
+The manual recovery command is documented below.
+
+
+--- MANUAL RECOVERY (if script died before downloading) ---
+
+If ~/run_elite_iter920.sh exited before finishing downloads (crash,
+Ctrl+C, network death), the .npz files might STILL be on Modal Volume.
+Pull them manually:
+
+  export PATH="$HOME/.local/bin:$PATH"
+  for I in 1 2 3 4 5 6 7 8 9 10; do
+      for SPEC in henryliang416525:A bobbyzinger122:B; do
+          PROFILE="${SPEC%%:*}"
+          TAG="${SPEC##*:}"
+          MODAL_PROFILE=$PROFILE modal volume get \
+              extinction-chess-helper-outputs \
+              /iter_920_elite${TAG}${I}.npz \
+              ~/extinction-chess/replay_buffer/iter_920_elite${TAG}${I}.npz \
+              --force 2>/dev/null && echo "GOT ${TAG}${I}" || echo "missing ${TAG}${I}"
+      done
+  done
+
+Then verify: `ls ~/extinction-chess/replay_buffer/iter_920_elite*.npz | wc -l`
+
+
+--- POST-ELITE STATE (what should exist when run completes) ---
+
+  Files in ~/extinction-chess/replay_buffer/:
+    iter_920.npz              (cluster's own gen, ~14k positions)
+    iter_920_eliteA1.npz...A10 (10 elite from account A)
+    iter_920_eliteB1.npz...B10 (10 elite from account B)
+                              (each ~3500 positions from 100 games)
+
+  Combined iter 920 slot in K=5 buffer:
+    ~14k (cluster) + ~35k (elite × 20) = ~49k positions
+    (vs baseline single-file ~14k)
+
+  During iters 921-924 (K=5 window still includes iter 920):
+    Training buffer includes all elite files
+    ~/train_584712.log shows breakdown:
+       replay buffer: loaded 5 iters, X files, Y positions total
+         (~Zk cluster + ~Wk elite) | ...s
+    (This logging only shows for jobs started after 2026-07-31 SCP
+    of updated alphazero.py with per-source position tracking.)
+
+  At iter 925:
+    Cleanup fires, deletes all iter_920*.npz (including elite files)
+    Buffer returns to normal 5 × ~14k = ~70k positions
+
+
+--- LOADER CHANGE DEPLOYED FOR ELITE LOGGING (2026-07-31) ---
+
+src/alphazero.py now classifies each replay buffer file by tag prefix:
+  untagged (iter_<N>.npz)         → "cluster"
+  tag starts with "elite"         → "elite"
+  tag starts with "modal"         → "modal"
+  anything else                   → "other"
+
+Loader prints per-source position counts in the log when non-cluster
+sources exist. Default single-file case (no elite/modal present)
+preserves original log format for backward compat with history parsing.
+
+Regex captures optional tag as group 2 now (previously discarded):
+  _REPLAY_ITER_RE = re.compile(r"^iter_(\d+)(?:_([A-Za-z0-9]+))?\.npz$")
+  def _replay_file_tag(fname):
+      m = _REPLAY_ITER_RE.match(fname)
+      return m.group(2) if m else None
+
+
+--- GPU: A10G TEMPORARILY, WILL STAY UNTIL NEXT REDEPLOY ---
+
+Elite run uses A10G (faster than L4 by ~1.4x, marginally more expensive
+per hour but roughly equal per-helper due to speedup). Change made via
+in-place edit on cluster:
+  sed -i 's/gpu="L4"/gpu="A10G"/' ~/extinction-chess/modal_helper.py
+  MODAL_PROFILE=henryliang416525 modal deploy modal_helper.py
+  MODAL_PROFILE=bobbyzinger122   modal deploy modal_helper.py
+
+Since daemon stays PAUSED indefinitely, this doesn't affect anything.
+Future elite runs will also use A10G until someone reverts. To revert:
+  sed -i 's/gpu="A10G"/gpu="L4"/' ~/extinction-chess/modal_helper.py
+  MODAL_PROFILE=henryliang416525 modal deploy modal_helper.py
+  MODAL_PROFILE=bobbyzinger122   modal deploy modal_helper.py
+
+Local git modal_helper.py stays at L4 (not committed with A10G) so
+future clone/redeploy starts back at L4.
+
+
+--- WHAT TO CHECK AFTER RUN COMPLETES ---
+
+  # Delivered count (should be 20, but 15+ is still useful)
+  ls ~/extinction-chess/replay_buffer/iter_920_elite*.npz | wc -l
+
+  # Elite data recognized on next iter's training step
+  # (cluster job 584712 needs to have loaded the NEW alphazero.py at
+  # startup — which it did, since we SCP'd before this job started)
+  grep "replay buffer: loaded" ~/train_584712.log | tail -5
+  # If elite ran successfully, you should see a line like:
+  #   replay buffer: loaded 5 iters, 25 files, X positions total
+  #     (~Yk cluster + ~Zk elite) | ...s
+
+  # Modal balance (remaining July credit)
+  # Visit https://modal.com/apps/henryliang416525 and check
+  # Workspace metrics → Credits (or Billing dashboard)
+
+
+--- LOOSE ENDS ---
+
+  - iter 920 auto-benchmark battery (jobs 584719-584732) queued on
+    trpro-slurm2 — includes vs iter 810 as distant-H2H so no manual
+    gap-fill needed this cycle. Aggregator lands at
+    ~/extinction-chess/benchmark_results/iter_920.txt once complete.
+
+  - iter 920 checkpoint download to laptop: SCP command in commands.txt
+    "== SSH / SCP ==" section using az_iter_920_100pct.pt.
+
+  - Modal pipeline remains PAUSED (MODAL_DISABLED sentinel present).
+    Cluster training runs normally as if Modal doesn't exist.
+    Next time someone wants to fire an elite batch:
+      1. Wait for target ×10 iter to complete
+      2. Copy + adapt the script (see template above)
+      3. Fire it. Delivered files feed the K=5 window naturally.
+
+  - trpro-slurm1 STILL drained since Jul 14 (day 18 now).
+    Admin ticket still pending — this hasn't changed.
