@@ -193,15 +193,36 @@ void SelfPlayManager::make_move(int slot) {
     pg.game.make_move(actual_move);
     pg.move_count++;
 
-    // Clean up MCTS tree
-    delete pg.mcts;
-    pg.mcts = nullptr;
-
     // Check if game is over or max moves reached
     if (pg.game.over || pg.move_count >= max_moves_) {
+        delete pg.mcts;
+        pg.mcts = nullptr;
         finish_game(slot);
+        return;
+    }
+
+    // Try to reuse the subtree rooted at the played child. promote() returns
+    // false (leaving the MCTS unchanged) if the child is missing, unexpanded,
+    // or has zero visits — in which case we fall back to fresh MCTS via the
+    // NEED_ROOT_EVAL path.
+    //
+    // On success: record_position for the NEW position must be called HERE
+    // because we're bypassing NEED_ROOT_EVAL (which is where record_position
+    // normally fires, inside process_results Phase 2). Without this, the
+    // policy target from this new position's search would have no matching
+    // board entry in the game record — the boards/policies vectors would
+    // desync.
+    if (use_tree_reuse_ && pg.mcts->promote(actual_move)) {
+        record_position(slot);
+        // Promoted MCTS may already have enough visits (rare edge case where
+        // the played child had inherited visit_count >= num_simulations_).
+        // In that case, is_done() is true and we go straight to MOVE_READY,
+        // where the next collect_leaves cycle will re-enter make_move for
+        // this slot.
+        pg.phase = pg.mcts->is_done() ? GamePhase::MOVE_READY : GamePhase::SEARCHING;
     } else {
-        // Need root eval for next position
+        delete pg.mcts;
+        pg.mcts = nullptr;
         pg.phase = GamePhase::NEED_ROOT_EVAL;
     }
 }
