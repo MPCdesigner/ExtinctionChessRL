@@ -1411,13 +1411,19 @@ def batched_self_play(model, device, games_per_iteration: int,
                       dirichlet_alpha: float = 0.3, noise_weight: float = 0.25,
                       temp_threshold: int = 30, max_moves: int = 200,
                       num_parallel: int = 50, max_batch: int = 512,
-                      mcts_batch_size: int = 8, num_threads: int = 1):
+                      mcts_batch_size: int = 8, num_threads: int = 1,
+                      use_tree_reuse: bool = False):
     """
     Batched self-play using C++ SelfPlayManager.
 
     All game logic and MCTS run in C++. Python only handles batched GPU
     inference. This maximizes GPU utilization by collecting leaf positions
     from many simultaneous games into one large batch.
+
+    use_tree_reuse: pass through to SelfPlayManager. When True, C++ side
+    calls MCTS::promote(chosen_move) after each move instead of destroying
+    the tree, reusing the subtree rooted at the played child. Default False
+    (fresh MCTS every move — matches pre-2026-08 behavior).
 
     Returns list of (boards, policies, players, outcome) tuples.
     """
@@ -1433,6 +1439,7 @@ def batched_self_play(model, device, games_per_iteration: int,
         max_moves=max_moves,
         mcts_batch_size=mcts_batch_size,
         num_threads=num_threads,
+        use_tree_reuse=use_tree_reuse,
     )
 
     total_evals = 0

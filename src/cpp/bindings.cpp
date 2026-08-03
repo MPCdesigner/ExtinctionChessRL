@@ -392,7 +392,7 @@ PYBIND11_MODULE(_ext_chess, m) {
     // ── SelfPlayManager ──────────────────────────────────────────────────
 
     py::class_<SelfPlayManager>(m, "SelfPlayManager")
-        .def(py::init<int, int, int, float, float, float, bool, int, int, int, int>(),
+        .def(py::init<int, int, int, float, float, float, bool, int, int, int, int, bool>(),
              py::arg("num_parallel_games"),
              py::arg("total_games"),
              py::arg("num_simulations") = 800,
@@ -403,7 +403,8 @@ PYBIND11_MODULE(_ext_chess, m) {
              py::arg("temp_threshold") = 15,
              py::arg("max_moves") = 200,
              py::arg("mcts_batch_size") = 8,
-             py::arg("num_threads") = 1)
+             py::arg("num_threads") = 1,
+             py::arg("use_tree_reuse") = false)
 
         .def("collect_leaves", [](SelfPlayManager& mgr, py::array_t<float> buf, int max_batch) {
             // Write directly into caller-provided buffer (avoids per-call allocation)

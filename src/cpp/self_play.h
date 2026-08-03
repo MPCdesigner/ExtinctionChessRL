@@ -79,7 +79,8 @@ public:
                     float dirichlet_alpha, float noise_weight,
                     bool tactical_shortcuts, int temp_threshold,
                     int max_moves, int mcts_batch_size,
-                    int num_threads = 1);
+                    int num_threads = 1,
+                    bool use_tree_reuse = false);
 
     // Collect positions needing NN evaluation from all active games.
     // Returns the number of positions. Boards are written to out_boards
@@ -112,6 +113,7 @@ private:
     int   max_moves_;
     int   mcts_batch_size_;
     int   num_threads_;
+    bool  use_tree_reuse_;
 
     // State
     std::vector<ParallelGame> games_;

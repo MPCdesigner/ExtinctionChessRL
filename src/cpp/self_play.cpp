@@ -18,7 +18,7 @@ SelfPlayManager::SelfPlayManager(int num_parallel_games, int total_games,
                                  float dirichlet_alpha, float noise_weight,
                                  bool tactical_shortcuts, int temp_threshold,
                                  int max_moves, int mcts_batch_size,
-                                 int num_threads)
+                                 int num_threads, bool use_tree_reuse)
     : num_parallel_(num_parallel_games),
       total_games_(total_games),
       num_simulations_(num_simulations),
@@ -30,6 +30,7 @@ SelfPlayManager::SelfPlayManager(int num_parallel_games, int total_games,
       max_moves_(max_moves),
       mcts_batch_size_(mcts_batch_size),
       num_threads_(std::max(1, num_threads)),
+      use_tree_reuse_(use_tree_reuse),
       games_started_(0),
       games_completed_(0)
 {
@@ -45,8 +46,9 @@ SelfPlayManager::SelfPlayManager(int num_parallel_games, int total_games,
     }
 
     printf("[SelfPlayManager] num_threads=%d, num_parallel=%d, mcts_batch=%d, "
-           "buf_per_thread=%d leaves\n",
-           num_threads_, num_parallel_, mcts_batch_size_, max_leaves_per_thread);
+           "buf_per_thread=%d leaves, tree_reuse=%s\n",
+           num_threads_, num_parallel_, mcts_batch_size_, max_leaves_per_thread,
+           use_tree_reuse_ ? "ON" : "off");
     fflush(stdout);
 
     // Start initial batch of games
