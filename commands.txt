@@ -459,8 +459,65 @@ If helpers STILL fail after this fix, causes to investigate:
 
 == MCTS SUBTREE REUSE (C++ PORT) ==
 
-Introduced Aug 2 2026. Status: code landed on `history-planes` branch,
-FLAG DEFAULTS OFF, awaiting T1/T2/T3 cluster validation before enabling.
+┌─ DEPLOYMENT STATUS (updated Aug 3 2026) ────────────────────────────────┐
+│ Code:      LANDED on history-planes branch (7 commits, see chain below) │
+│ Cluster:   src/cpp/* SCP'd Aug 2 → next .so build includes reuse code   │
+│            src/alphazero.py + src/run_training.py SCP'd Aug 3           │
+│ Flag:      use_tree_reuse=True in src/run_training.py                   │
+│                                                                         │
+│ Active in training: NOT YET as of Aug 3 evening. Job 585790 has already │
+│   been running ~14h with the OLD Python files (imported at Python       │
+│   startup — SCP after that point doesn't retroactively apply). Iter     │
+│   935-9?? in job 585790 are BASELINE (no reuse), same as 930-934.       │
+│                                                                         │
+│ First reuse-enabled iter: expected iter 940 (or whatever iter 585790    │
+│   ends on + 1). The auto-resubmit after 585790's wall-time exit will    │
+│   start a fresh Python process, import the updated alphazero.py, see    │
+│   use_tree_reuse=True, and boot C++ with tree_reuse=ON.                 │
+│                                                                         │
+│ ★ HOW TO CONFIRM WHEN REUSE IS ACTUALLY ACTIVE:                         │
+│    grep tree_reuse ~/train_<jobid>.log | head -3                        │
+│    Look for line "[SelfPlayManager] ... tree_reuse=ON"                  │
+│    (baseline is "tree_reuse=off" — literal boot-log field, added Aug 2) │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ T1/T2 EVIDENCE (job 586087, Aug 3 2026) ───────────────────────────────┐
+│ Standalone test on trpro-slurm2 (4090), iter 930 model, 20 games, 800   │
+│ sims. tools/test_cpp_reuse.py runs baseline then reuse in one job.      │
+│                                                                         │
+│                   BASELINE (off) | REUSE (ON)                           │
+│   games completed :          20  |          20    ← both clean          │
+│   wins_w          :          15  |          11                          │
+│   wins_b          :           5  |           9                          │
+│   draws           :           0  |           0    ← no draw spike       │
+│   total_positions :         845  |         759    ← ~10% fewer (good)   │
+│   avg_pos_per_game:        42.2  |        38.0                          │
+│   wall_seconds    :      1396.8  |       933.5    ← 1.50x speedup       │
+│                                                                         │
+│ Verdict: PASS. Speedup at top of 1.3-1.5x target. W/B shift within      │
+│ 20-game noise (95% CIs ±20% overlap heavily). Ready for T3.             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ THE .so CACHING GOTCHA (important!) ───────────────────────────────────┐
+│ When a training job starts, train.sh runs python3 setup.py build_ext    │
+│ which compiles _ext_chess.so from src/cpp/. Then Python imports it into │
+│ memory. From then on, ANY changes you SCP to the cluster do NOT affect  │
+│ the running job. The .so is memory-mapped and Python holds the imported │
+│ module. Same for alphazero.py — imported once at startup.               │
+│                                                                         │
+│ Practical consequence: if you SCP updates while a job is running, they  │
+│ apply to the NEXT auto-resubmit (fresh Python process, fresh build).    │
+│                                                                         │
+│ We hit this twice on Aug 3:                                             │
+│   1. src/cpp/ was SCP'd Aug 2, but job 585236 kept using its cached .so │
+│      through iters 930-934. iter 930 boot line had no tree_reuse=       │
+│      field, confirming the OLD .so was in use.                          │
+│   2. src/alphazero.py was SCP'd Aug 3, but job 585790 kept using its    │
+│      cached copy through iters 935-9??.                                 │
+│                                                                         │
+│ Not a bug — just a natural consequence of Python import caching.        │
+│ Design the deployment plan around the auto-resubmit cadence.            │
+└─────────────────────────────────────────────────────────────────────────┘
 
 ┌─ What it does ──────────────────────────────────────────────────────────┐
 │ When a game plays move M, MCTS at position P0 built a subtree rooted    │
@@ -511,18 +568,65 @@ C++ port (new — src/cpp/):
   SelfPlayManager constructor takes `bool use_tree_reuse` (default false).
   Passed through:
     - src/alphazero.py batched_self_play(): kwarg use_tree_reuse (default False)
+    - src/alphazero.py train(): kwarg use_tree_reuse (default False)
     - CppSelfPlayManager binding in src/cpp/bindings.cpp
   Boot log prints "[SelfPlayManager] ... tree_reuse=ON|off" so you can
   confirm cluster state from head of train_XXX.log.
 
-  To activate reuse in training:
-    Edit src/run_training.py, find the batched_self_play() call,
-    add `use_tree_reuse=True`. Push to GitHub. Next cluster auto-resubmit
-    picks it up. Confirmed via boot log "tree_reuse=ON".
+  To ACTIVATE reuse (already done as of Aug 3, commit 81517a9):
+    Edit src/run_training.py, add `use_tree_reuse=True` to the train() call.
+    Push to GitHub. SCP src/run_training.py + src/alphazero.py to cluster.
+    Next cluster auto-resubmit boots C++ with tree_reuse=ON.
 
-  To rollback: edit run_training.py, remove `use_tree_reuse=True`
-    (or set to False). Push. Next resubmit reverts. No C++ rebuild
-    needed — the reuse machinery is compiled in but dormant.
+  ★ TO ROLLBACK (if training regresses under reuse):
+
+    # 1. Edit src/run_training.py locally, change:
+    #      use_tree_reuse=True,
+    #    to:
+    #      use_tree_reuse=False,   # or delete the line entirely
+    # 2. Commit + push:
+    git add src/run_training.py
+    git commit -m "Disable use_tree_reuse (rollback: reason=...)"
+    git push origin history-planes
+
+    # 3. SCP to cluster (do NOT wait for next resubmit — SCP immediately
+    #    so that even if the running job crashes and restarts early, it
+    #    picks up the disabled state):
+    scp -i C:\Users\henry\.ssh\id_ed25519 \
+      "c:/Users/henry/Desktop/Extinction Chess RL/src/run_training.py" \
+      h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+
+    # 4. Wait for next auto-resubmit. C++ .so still contains the reuse
+    #    machinery (compiled in), but the flag is off so make_move() falls
+    #    back to the original delete-and-fresh path. NO C++ rebuild needed.
+
+    # 5. Verify rollback took effect on the NEW job:
+    tail -5 ~/train_<newjobid>.log | grep tree_reuse
+    #    Expect: [SelfPlayManager] ... tree_reuse=off
+
+  If you need to DEPLOY IMMEDIATELY (cannot wait ~20h for auto-resubmit):
+    scancel <current-jobid>   # from cluster shell
+    # train.sh's USR1 trap handles this cleanly and auto-resubmits.
+    # New job starts fresh Python → picks up new run_training.py.
+
+━━ DIAGNOSTIC commands (check current cluster state) ━━━━━━━━━━━━━━━━━━━
+
+  # 1. What does the source SAY the flag should be?
+  ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca \
+    "grep -n use_tree_reuse ~/extinction-chess/src/run_training.py"
+
+  # 2. What is the CURRENTLY RUNNING job actually doing?
+  ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca \
+    "squeue -u h74liang && grep tree_reuse \$(ls -t ~/train_*.log | head -1)"
+  # First line: shows JOBID (which log file to grep). Second: boot line.
+
+  # 3. Is the .so on cluster the reuse-enabled build?
+  # Look for the promote() symbol in the shared library:
+  ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca \
+    "nm -D ~/extinction-chess/src/_ext_chess*.so 2>/dev/null | grep -i promote"
+  # Empty output = OLD .so (no promote). Non-empty = REUSE .so.
+  # Note: symbol may be mangled (e.g. _ZN3ext4MCTS7promoteERKNS_4MoveE) — any
+  # match containing "promote" or "MCTS" + "Move" suffices.
 
 ━━ Test protocol (T1/T2/T3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -561,19 +665,24 @@ Cluster (T1/T2 = smoke tests, T3 = training A/B):
   # If bad: revert flag flip, push, next auto-resubmit fixes it.
   # Cluster keeps producing iters unaffected between switch and revert.
 
-━━ Commit chain (all on history-planes) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ Commit chain (all on history-planes, in order) ━━━━━━━━━━━━━━━━━━━━━
 
   1a9a919  src/cpp MCTS: extract apply_dirichlet_noise_at_root() helper
   6a2fe25  src/cpp MCTS: implement promote(m) with subtree pruning
   c8404f2  Add use_tree_reuse flag plumbing (default False)
   974a223  Wire promote() into make_move() behind use_tree_reuse flag
   85f9902  Add tools/test_cpp_reuse.py — standalone smoke test
-  (this commit)  Update commands.txt with reuse-port docs
-  (later)        Flip use_tree_reuse=True in run_training.py
+  66fb899  Document MCTS subtree reuse port in commands.txt (first version)
+  81517a9  Enable MCTS subtree reuse in training (use_tree_reuse=True)
+  a896207  History through iter 934 (final baseline batch, pre-reuse cutover)
+  (this commit)  Update commands.txt with deployment status + T1/T2 evidence
 
-Each of the first 5 is byte-safe when built: default flag is False, so
-old behavior. Pushed on branch `history-planes` — not merged to master
-until T1+T2+T3 all green.
+Commits 1a9a919 through 66fb899 are byte-safe: default flag is False, so
+existing behavior. Commit 81517a9 is the one that CHANGES training behavior
+(only after it lands on cluster AND a fresh Python process picks it up).
+
+Not merged to master. Consider merge only after T3 has validated on the
+cluster for at least 10 iters without regression.
 
 ━━ Files touched ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -582,9 +691,9 @@ until T1+T2+T3 all green.
   src/cpp/self_play.h       — use_tree_reuse ctor arg + use_tree_reuse_ field
   src/cpp/self_play.cpp     — ctor init, boot-log flag print, make_move wire
   src/cpp/bindings.cpp      — pybind11 signature + arg
-  src/alphazero.py          — batched_self_play() kwarg + pass-through
-  tools/test_cpp_reuse.py   — new smoke-test script
-  (later) src/run_training.py — the actual flag flip
+  src/alphazero.py          — train() and batched_self_play() kwargs
+  src/run_training.py       — use_tree_reuse=True at the train() call site
+  tools/test_cpp_reuse.py   — standalone smoke-test script (T1/T2)
 
 ━━ SCP list for cluster deployment ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
