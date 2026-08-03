@@ -295,23 +295,6 @@ void MCTS::expand_root(const float* policy_logits) {
         probs[i] /= (sum_exp + 1e-8f);
     }
 
-    // Add Dirichlet noise at root
-    if (dirichlet_alpha_ > 0 && noise_weight_ > 0) {
-        std::mt19937 rng(std::random_device{}());
-        std::gamma_distribution<float> gamma(dirichlet_alpha_, 1.0f);
-
-        std::vector<float> noise(probs.size());
-        float noise_sum = 0.0f;
-        for (size_t i = 0; i < noise.size(); i++) {
-            noise[i] = gamma(rng);
-            noise_sum += noise[i];
-        }
-        for (size_t i = 0; i < noise.size(); i++) {
-            noise[i] /= (noise_sum + 1e-8f);
-            probs[i] = (1.0f - noise_weight_) * probs[i] + noise_weight_ * noise[i];
-        }
-    }
-
     // Copy root game before reallocation
     Game root_game = nodes_[root_].game;
     nodes_.reserve(nodes_.size() + filtered_legal.size());
@@ -330,6 +313,32 @@ void MCTS::expand_root(const float* policy_logits) {
     }
 
     nodes_[root_].is_expanded = true;
+
+    apply_dirichlet_noise_at_root();
+}
+
+void MCTS::apply_dirichlet_noise_at_root() {
+    if (dirichlet_alpha_ <= 0.0f || noise_weight_ <= 0.0f) return;
+
+    MCTSNode& root_node = nodes_[root_];
+    int n = root_node.num_children;
+    if (n <= 0) return;
+
+    std::mt19937 rng(std::random_device{}());
+    std::gamma_distribution<float> gamma(dirichlet_alpha_, 1.0f);
+
+    std::vector<float> noise(n);
+    float noise_sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        noise[i] = gamma(rng);
+        noise_sum += noise[i];
+    }
+    for (int i = 0; i < n; i++) {
+        noise[i] /= (noise_sum + 1e-8f);
+        int ci = root_node.first_child + i;
+        nodes_[ci].prior = (1.0f - noise_weight_) * nodes_[ci].prior
+                         + noise_weight_ * noise[i];
+    }
 }
 
 int MCTS::select_leaves(float* out_boards) {

@@ -95,6 +95,7 @@ private:
     float terminal_value(const Game& g) const;
     void add_virtual_loss(int node_idx);
     void remove_virtual_loss(int node_idx);
+    void apply_dirichlet_noise_at_root();
 
     // Tactical shortcuts
     struct TacticalResult {
