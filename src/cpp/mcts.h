@@ -68,6 +68,29 @@ public:
     // Expand root node with policy logits (called from Python after first NN eval)
     void expand_root(const float* policy_logits);
 
+    // Promote the child matching `m` to become the new root, keeping its
+    // subtree and discarding the rest of the pool. Called by SelfPlayManager
+    // after a move is played, to reuse the search work already done for that
+    // subtree.
+    //
+    // Returns true on success. On success:
+    //   - nodes_ is rebuilt (compacted) to only contain the promoted subtree
+    //   - root_ points at the new root (formerly the matching child)
+    //   - sims_done_ is set to the new root's visit_count (top-up semantics)
+    //   - virtual_loss is zeroed on every carried-over node (defensive; should
+    //     already be 0 since promote() is only called after MCTS::is_done())
+    //   - Fresh Dirichlet noise is applied to the new root's children priors
+    //     (if dirichlet_alpha_ > 0 and noise_weight_ > 0)
+    //
+    // Returns false (and leaves the MCTS unchanged) if:
+    //   - no child of root matches m (by from/to/promo), or
+    //   - the matching child is not expanded, or
+    //   - the matching child has visit_count == 0
+    //
+    // Caller should treat false as a signal to destroy this MCTS and start
+    // a fresh one.
+    bool promote(const Move& m);
+
 private:
     // Node pool
     std::vector<MCTSNode> nodes_;

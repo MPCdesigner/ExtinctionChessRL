@@ -317,6 +317,96 @@ void MCTS::expand_root(const float* policy_logits) {
     apply_dirichlet_noise_at_root();
 }
 
+bool MCTS::promote(const Move& m) {
+    // Find the child of root matching m by (from, to, promo). We ignore the
+    // flags/castle fields because in a legal MCTS tree those are fully
+    // determined by (from, to, promo) — same convention used in
+    // self_play.cpp::make_move when it maps a chosen visit-count move to a
+    // legal move.
+    const MCTSNode& root_node_ref = nodes_[root_];
+    int found = -1;
+    for (int i = 0; i < root_node_ref.num_children; i++) {
+        int ci = root_node_ref.first_child + i;
+        const Move& cm = nodes_[ci].move;
+        if (cm.from == m.from && cm.to == m.to && cm.promo == m.promo) {
+            found = ci;
+            break;
+        }
+    }
+    if (found < 0) return false;
+
+    // Guard: promoted subtree must have real MCTS state — otherwise there is
+    // nothing to reuse and we'd better fall back to fresh MCTS (which will do
+    // a proper root NN eval and expand root).
+    if (!nodes_[found].is_expanded) return false;
+    if (nodes_[found].visit_count == 0) return false;
+
+    // BFS from `found` to collect every node reachable in the promoted
+    // subtree. Because allocate_node assigns indices in insertion order
+    // (parents before children), and BFS visits parents before children, the
+    // resulting `reachable` list is topologically valid — every parent appears
+    // before any of its descendants.
+    std::vector<int> reachable;
+    reachable.reserve(nodes_[found].visit_count);  // upper-bound-ish hint
+    reachable.push_back(found);
+    size_t qi = 0;
+    while (qi < reachable.size()) {
+        int idx = reachable[qi++];
+        const MCTSNode& n = nodes_[idx];
+        if (n.is_expanded && n.num_children > 0) {
+            for (int i = 0; i < n.num_children; i++) {
+                reachable.push_back(n.first_child + i);
+            }
+        }
+    }
+
+    // Build old→new index map. -1 for unreachable nodes.
+    std::vector<int> remap(nodes_.size(), -1);
+    for (size_t i = 0; i < reachable.size(); i++) {
+        remap[reachable[i]] = static_cast<int>(i);
+    }
+
+    // Rebuild nodes_ as a compact vector with parent/first_child remapped.
+    std::vector<MCTSNode> new_nodes;
+    new_nodes.reserve(reachable.size());
+    for (int old_idx : reachable) {
+        MCTSNode n = nodes_[old_idx];  // copy
+        if (old_idx == found) {
+            n.parent = -1;                  // this is now the root
+        } else {
+            n.parent = remap[n.parent];     // parent must be reachable (BFS invariant)
+        }
+        if (n.first_child >= 0) {
+            n.first_child = remap[n.first_child];
+        }
+        // Defensive: promote() is only called between move boundaries after
+        // MCTS::is_done() returned true, at which point all virtual_loss
+        // should be back to 0 (added and removed within one collect/process
+        // cycle). Zero it out anyway so a stray non-zero can't linger.
+        n.virtual_loss = 0;
+        // visit_count, value_sum, prior, game, move, is_expanded, num_children
+        // all carry over as-is.
+        new_nodes.push_back(std::move(n));
+    }
+
+    // Commit the rebuild
+    nodes_ = std::move(new_nodes);
+    root_ = 0;                              // promoted node is first in BFS order
+    sims_done_ = nodes_[root_].visit_count;
+
+    // Clear any stale pending state from the pre-promotion MCTS. Not strictly
+    // needed since promote() is only ever called after is_done() returned true
+    // (which requires pending_* to be empty), but cheap and defensive.
+    pending_leaves_.clear();
+    pending_terminals_.clear();
+
+    // Apply fresh Dirichlet noise to the new root's children priors
+    // (matches Python mcts_search line 1081-1084 reuse-path behavior)
+    apply_dirichlet_noise_at_root();
+
+    return true;
+}
+
 void MCTS::apply_dirichlet_noise_at_root() {
     if (dirichlet_alpha_ <= 0.0f || noise_weight_ <= 0.0f) return;
 
