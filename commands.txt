@@ -398,6 +398,13 @@ BUGGY signature: batch=8 output shows [X, 8, 8, 8, 8, ...] (batch-size 8s).
 
 == C++ DEPLOYMENT PATTERN ==
 
+★ DEAD CODE TRAP: there are TWO C++ trees in this repo:
+    src/cpp/*   ← LIVE. Built by src/setup.py. Has num_threads + true VL.
+    cpp/*       ← DEAD. Old duplicate at repo root, out of sync. Don't touch.
+  This burned Aug 2 — 2 commits landed in cpp/ before I noticed the .so was
+  built from src/cpp/. Always verify against src/setup.py's sources= list
+  before editing, and use `grep -l num_threads cpp/` to prove which is live.
+
 Changes to src/cpp/*.h or *.cpp require SCP-up + recompile on cluster:
 
 1. Edit locally (using Edit tool or manually)
@@ -448,6 +455,157 @@ If helpers STILL fail after this fix, causes to investigate:
   2. Target node queue pressure (auto-benchmark filling trpro-slurm2)
   3. Alphazero.py's launch_helper_with_fallback defaults pointing at bad nodes
      (currently primary=trpro-slurm2, fallback=delta-slurm1 per Jul 25 edit)
+
+
+== MCTS SUBTREE REUSE (C++ PORT) ==
+
+Introduced Aug 2 2026. Status: code landed on `history-planes` branch,
+FLAG DEFAULTS OFF, awaiting T1/T2/T3 cluster validation before enabling.
+
+┌─ What it does ──────────────────────────────────────────────────────────┐
+│ When a game plays move M, MCTS at position P0 built a subtree rooted    │
+│ at M's child that reflects visits assigned during P0's search. Without  │
+│ reuse we throw it away and start MCTS from scratch at P1. With reuse    │
+│ we PROMOTE that subtree to be the new root and only run                  │
+│ (num_simulations - inherited_visits) additional sims to top up.         │
+│                                                                         │
+│ Measured savings (tools/measure_reuse_savings.py, iter 920, 800 sims,   │
+│ 50 moves): 35.7% avg per-move (median 29.9%), 1.55x MCTS-work speedup.  │
+│ Realistic wall-time speedup: 1.3-1.5x (GPU forward passes dominate).    │
+│                                                                         │
+│ vs 13.5k s/iter current: expect 9-11k s/iter with reuse ON.             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ Design (mirrors Python's descend_root + mcts_search reuse path) ━━━━━━━
+
+Python reference (already in src/alphazero.py, unchanged):
+  - descend_root(prev_root, moves) → walks the tree
+  - mcts_search(..., prev_root=X, return_root=True) → top-up semantics
+  - Bit-exact identity vs fresh proved at BATCH_SIZE_MCTS=1 in
+    tools/test_reuse.py (passed Aug 2 with iter 850).
+
+C++ port (new — src/cpp/):
+  MCTS::promote(const Move& m)  (mcts.h line ~68, mcts.cpp bottom):
+    1. Find root's child matching m by (from, to, promo).
+    2. Guard: return false if missing, unexpanded, or visit_count==0.
+    3. BFS from matched child → collect reachable node indices.
+    4. Build old→new remap, rebuild nodes_ as compact vector with
+       parent/first_child indices remapped, virtual_loss zeroed.
+    5. Commit: root_=0, sims_done_=new-root.visit_count, clear pending.
+    6. apply_dirichlet_noise_at_root() (extracted helper — shared with
+       expand_root).
+  Returns bool. Caller destroys the MCTS on false.
+
+  SelfPlayManager::make_move (self_play.cpp) — with flag:
+    - After playing move on pg.game:
+      - If game.over or move_count >= max_moves: finish_game as before.
+      - Else if use_tree_reuse_ && mcts->promote(actual_move):
+          record_position(slot);   ← must be called here (bypassing
+                                     NEED_ROOT_EVAL, which normally does it)
+          phase = mcts->is_done() ? MOVE_READY : SEARCHING
+      - Else (flag off, or promote failed):
+          delete mcts; phase = NEED_ROOT_EVAL (unchanged behavior)
+
+━━ The flag ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  SelfPlayManager constructor takes `bool use_tree_reuse` (default false).
+  Passed through:
+    - src/alphazero.py batched_self_play(): kwarg use_tree_reuse (default False)
+    - CppSelfPlayManager binding in src/cpp/bindings.cpp
+  Boot log prints "[SelfPlayManager] ... tree_reuse=ON|off" so you can
+  confirm cluster state from head of train_XXX.log.
+
+  To activate reuse in training:
+    Edit src/run_training.py, find the batched_self_play() call,
+    add `use_tree_reuse=True`. Push to GitHub. Next cluster auto-resubmit
+    picks it up. Confirmed via boot log "tree_reuse=ON".
+
+  To rollback: edit run_training.py, remove `use_tree_reuse=True`
+    (or set to False). Push. Next resubmit reverts. No C++ rebuild
+    needed — the reuse machinery is compiled in but dormant.
+
+━━ Test protocol (T1/T2/T3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Local (do first — laptop CPU):
+  # Python-side bit-exact identity proof, unchanged from Aug 2 run:
+  python tools/test_reuse.py --batch-size 1 --sims 200 --moves 30 \
+    --model models/az_iter920.pt
+  # Expected: RESULT: PASS.
+
+Cluster (T1/T2 = smoke tests, T3 = training A/B):
+
+  # T1 — baseline unchanged (flag OFF). Run this AFTER SCP-ing the
+  # new src/cpp/*.cpp/h and src/alphazero.py, and after the cluster
+  # rebuilds _ext_chess.so. Compare against a run of the SAME command
+  # on the pre-reuse .so if possible; if not, just check it completes.
+  sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 \
+         --mem=32G --time=1:00:00 --output=$HOME/reuse_T1_%j.log \
+         --wrap="cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && \
+                 python3 ../tools/test_cpp_reuse.py \
+                   --model ~/extinction-chess/models/az_iter_930_100pct.pt \
+                   --games 20 --sims 800 --num-parallel 20 --num-threads 4"
+  # test_cpp_reuse.py runs BOTH baseline and reuse in one job.
+
+  # T2 = above job's REUSE pass results. Look for:
+  #   - Same # games completed as baseline
+  #   - total_positions drops proportionally (fewer NN evals)
+  #   - Wall-time speedup 1.3-1.5x
+  #   - Draws didn't spike (>3 = investigate)
+
+  # T3 — flip flag in run_training.py, push, watch first iter under reuse.
+  # Check train_NEXT.log for:
+  #   - "tree_reuse=ON" in the [SelfPlayManager] boot line
+  #   - gen time (~9-11k s target vs ~13.5k baseline)
+  #   - W/B/D distribution stays in band (~55-60% W)
+  #   - Loss values continue their trajectory, no wild spike
+  # If bad: revert flag flip, push, next auto-resubmit fixes it.
+  # Cluster keeps producing iters unaffected between switch and revert.
+
+━━ Commit chain (all on history-planes) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1a9a919  src/cpp MCTS: extract apply_dirichlet_noise_at_root() helper
+  6a2fe25  src/cpp MCTS: implement promote(m) with subtree pruning
+  c8404f2  Add use_tree_reuse flag plumbing (default False)
+  974a223  Wire promote() into make_move() behind use_tree_reuse flag
+  85f9902  Add tools/test_cpp_reuse.py — standalone smoke test
+  (this commit)  Update commands.txt with reuse-port docs
+  (later)        Flip use_tree_reuse=True in run_training.py
+
+Each of the first 5 is byte-safe when built: default flag is False, so
+old behavior. Pushed on branch `history-planes` — not merged to master
+until T1+T2+T3 all green.
+
+━━ Files touched ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  src/cpp/mcts.h            — apply_dirichlet_noise_at_root, promote decls
+  src/cpp/mcts.cpp          — apply_dirichlet_noise_at_root, promote impls
+  src/cpp/self_play.h       — use_tree_reuse ctor arg + use_tree_reuse_ field
+  src/cpp/self_play.cpp     — ctor init, boot-log flag print, make_move wire
+  src/cpp/bindings.cpp      — pybind11 signature + arg
+  src/alphazero.py          — batched_self_play() kwarg + pass-through
+  tools/test_cpp_reuse.py   — new smoke-test script
+  (later) src/run_training.py — the actual flag flip
+
+━━ SCP list for cluster deployment ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  scp -i C:\Users\henry\.ssh\id_ed25519 \
+    "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/mcts.h" \
+    "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/mcts.cpp" \
+    "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/self_play.h" \
+    "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/self_play.cpp" \
+    "c:/Users/henry/Desktop/Extinction Chess RL/src/cpp/bindings.cpp" \
+    h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/cpp/
+
+  scp -i C:\Users\henry\.ssh\id_ed25519 \
+    "c:/Users/henry/Desktop/Extinction Chess RL/src/alphazero.py" \
+    h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+
+  scp -i C:\Users\henry\.ssh\id_ed25519 \
+    "c:/Users/henry/Desktop/Extinction Chess RL/tools/test_cpp_reuse.py" \
+    h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/tools/
+
+  # Then on cluster:
+  cd ~/extinction-chess/src && python3 setup.py build_ext --inplace 2>&1 | tail -5
 
 
 == BENCHMARK LOG PATH CONVENTION ==
