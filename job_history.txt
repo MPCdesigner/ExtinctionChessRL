@@ -130,7 +130,8 @@ ap-E2lmPbu  693-696    Modal A10G     Jun 29 08:55 EDT    Jun 29 14:43 EDT    ~5
 584512    910-914   delta-slurm1  Jul 30 ~09:00 EDT  Jul 31 ~04:15 EDT  ~19h15m   COMPLETED  Auto-resubmit from 584357. 5 iters at ~13.5-14k s each. iter 910 hit ★ 100% and fired auto-benchmark: **iter 910 = new strongest checkpoint, beats iter 900 (61.3%), iter 810 gap-fill (64.8%), iter 100 (85.2%)**. Post-iter-910 iters 911-914 show continued stable incremental training. Helpers STILL failed all 5 iters. Auto-resubmit → 584558.
 584558    915-919   delta-slurm1  Jul 31 ~04:15 EDT  Jul 31 ~19:30 EDT  ~19h15m   COMPLETED  Auto-resubmit from 584512. 5 iters at ~13.7k s/iter. Wall-time exit BEFORE iter 920. Post-recovery incremental training continues: W-bias 54-61%, policy 2.068-2.122 (narrow band), value stable 0.169-0.175. Buffer at 72-73k. Modal pipeline deployed during this job's runtime but paused (MODAL_DISABLED). Auto-resubmit → 584712.
 584712    920-924   delta-slurm1  Jul 31 ~19:30 EDT  Aug 1 ~15:30 EDT   ~20h       COMPLETED  Auto-resubmit from 584558. 5 iters at ~14k s each. First job with updated alphazero.py loader (regex + per-source position logging + try/except). Iter 920 hit ★ 100% and fired auto-benchmark (jobs 584719-584732). **Elite Modal batch attempted for iter 920, FAILED at Modal 2h timeout — zero of 20 helpers delivered .npz files. Cluster training unaffected.** Post-recovery incremental training continues stably. Modal pipeline torn down 2026-08-01. Auto-resubmit → 584818.
-584818    925-      delta-slurm1  Aug 1 ~15:30 EDT   (running)   —          RUNNING    Auto-resubmit from 584712. Iter 930 next auto-benchmark ~5 iters in.
+584818    925-929   delta-slurm1  Aug 1 ~15:30 EDT   Aug 2 ~11:45 EDT   ~20h15m   COMPLETED  Auto-resubmit from 584712. 5 iters at ~13.5-13.8k s/iter (still no helpers — trpro-slurm1 drained day 19). Steady incremental: W-bias 57-63% (iter 925 was 63% — high but within band), policy loss oscillated 2.087-2.151, value hit new low 0.164 at iter 928. Buffer stable at 72-73k. Wall-time exit BEFORE iter 930. Auto-resubmit → 585236.
+585236    930-      delta-slurm1  Aug 2 ~11:45 EDT   (running)          —          RUNNING    Auto-resubmit from 584818. Iter 930 will be first iter → auto-benchmark fires immediately.
 
 
 Log Access
@@ -249,5 +250,6 @@ tail -10 ~/train_584357.log                         # 584357   iters 905-909 (po
 tail -10 ~/train_584512.log                         # 584512   iters 910-914 (iter 910 benchmark: new strongest checkpoint, beats iter 810 gap-fill 64.8%)
 tail -10 ~/train_584558.log                         # 584558   iters 915-919 (wall-time exit before iter 920; steady incremental training)
 tail -10 ~/train_584712.log                         # 584712   iters 920-924 (iter 920 benchmark fired; elite Modal batch failed with 0/20 delivery)
-tail -10 ~/train_584818.log                         # 584818   iters 925+    (running; iter 930 next auto-benchmark)
+tail -10 ~/train_584818.log                         # 584818   iters 925-929 (helpers still failing every iter; ~13.5-13.8k s/iter without help; W-bias 57-63%)
+tail -10 ~/train_585236.log                         # 585236   iters 930+    (running; iter 930 will be first iter, auto-benchmark will fire)
  

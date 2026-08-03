@@ -919,3 +919,8 @@ Iter  W    B    D   Positions  Helper  GenTime  TrainT    NNEvals     Loss    Po
  922  232  166   2    14702      0   13785.6s  105.2s   10350253   2.2714  2.1022  0.1692  W=58%; policy 2.102. Value 0.169 (drifting down).
  923  244  154   2    14125      0   13474.6s  103.6s    9952504   2.2586  2.0930  0.1656  W=61%; policy 2.093. Value 0.166.
  924  227  171   2    15100      0   13990.2s  104.9s   10669288   2.2639  2.0989  0.1650  W=57%; policy 2.099. Value 0.165 (new low). Post-recovery incremental training continues; value loss slowly drifting down while policy loss oscillates narrowly. Wall-time exit; auto-resubmit 584818.
+ 925  252  148   0    14108      0   13325.8s  102.9s    9920223   2.2592  2.0872  0.1720  W=63%; policy 2.087. Highest W-skew in a while (252W-148B).
+ 926  239  159   2    14678      0   13755.0s  102.7s   10368378   2.3023  2.1285  0.1739  W=60%; policy 2.128 (biggest jump in ~10 iters).
+ 927  228  171   1    15017      0   13617.4s  107.6s   10581182   2.2969  2.1246  0.1723  W=57%; policy 2.125.
+ 928  232  168   0    14428      0   13557.4s  107.7s   10096774   2.2892  2.1252  0.1640  W=58%; policy 2.125. Value 0.164 (new low).
+ 929  226  174   0    14742      0   13690.4s  105.0s   10398396   2.3174  2.1511  0.1663  W=57%; policy 2.151 (highest in this segment). Wall-time exit before iter 930; auto-resubmit 585236. iter 930 will be first iter of new job.
