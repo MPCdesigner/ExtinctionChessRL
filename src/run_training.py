@@ -12,6 +12,10 @@ if __name__ == "__main__":
         models_dir="../models",
         resume=True,
         num_workers=4,
+        # ── MCTS subtree reuse (enabled Aug 3 2026) ──
+        # 1.50x wall-time speedup measured on iter 930 (job 586087). Falls
+        # back to fresh MCTS on any promote() failure. Rollback: set to False.
+        use_tree_reuse=True,
         # instant_win_positions=1000,  # Disabled for now; revisit at iter 270
         hard_win_positions=300,
         extra_hard_win_positions=0,  # disabled to stop further damage

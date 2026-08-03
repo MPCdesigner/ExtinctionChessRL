@@ -1744,6 +1744,13 @@ def train(
     resume: bool = True,
     eval_simulations: int = 100,
     num_workers: int = 1,
+    # ── MCTS subtree reuse (C++ SelfPlayManager flag) ──
+    # When True, C++ side calls MCTS::promote() after each move to reuse the
+    # subtree rooted at the played child instead of destroying the tree and
+    # starting fresh. Measured ~1.5x wall-time speedup on iter 930 smoke test
+    # (job 586087, Aug 3 2026). See commands.txt "MCTS SUBTREE REUSE" section
+    # for design + rollback procedure.
+    use_tree_reuse: bool = False,
     instant_win_positions: int = 0,
     hard_win_positions: int = 0,
     extra_hard_win_positions: int = 0,
@@ -1873,6 +1880,7 @@ def train(
                 num_parallel=min(50, games_per_iteration),
                 max_batch=512,
                 num_threads=4,
+                use_tree_reuse=use_tree_reuse,
             )
             for boards, policies, players, outcome in game_results:
                 for b, pi, player in zip(boards, policies, players):
