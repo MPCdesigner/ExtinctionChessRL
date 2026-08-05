@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 src/models/
 src/training_log*.json
+
+# Value-drilling dataset (managed by tools/positional_eval/value_dataset.py)
+# Contains hand-authored training positions with value targets. Kept local
+# and uploaded to cluster on demand via tools/build_value_drill_npz.py
+dataset/
