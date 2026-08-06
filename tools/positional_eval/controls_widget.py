@@ -27,8 +27,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", "src"))
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
+# Also make own package dir importable so `from value_dataset import ...` works
+# when the tool is launched as `python -m tools.positional_eval`.
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from extinction_chess import Color  # noqa: E402
+
+from value_dataset import VALUE_TAGS  # noqa: E402
 
 
 # Actions the widget can report back to the main loop.
@@ -41,6 +47,16 @@ ACT_STEP_FWD = "step_forward"
 ACT_SAVE = "save"
 ACT_LOAD = "load"
 ACT_TOGGLE_SETTINGS = "toggle_settings"
+
+# Value-drilling generation actions.
+ACT_TOGGLE_VALUE_GEN = "toggle_value_gen"
+ACT_SAVE_VALUE_WHITE = "save_value_white"     # +1
+ACT_SAVE_VALUE_DRAW = "save_value_draw"       # 0
+ACT_SAVE_VALUE_BLACK = "save_value_black"     # -1
+# Tag chips: action name derived at runtime as ACT_TAG_PREFIX + tag_name.
+# Handled internally by ControlsWidget (mutates active_tags); __main__ does
+# not need to dispatch these itself.
+ACT_TAG_PREFIX = "toggle_tag_"
 
 
 class Button:
@@ -93,6 +109,30 @@ class ControlsWidget:
         self.btn_load = Button("Load", ACT_LOAD, width=60)
         self.btn_settings = Button("Settings", ACT_TOGGLE_SETTINGS, width=90)
 
+        # ── Value-drilling generation controls ──────────────────────────────
+        # Toggle button is always visible; the save/tag buttons only appear
+        # when value_gen_enabled is True (see _layout).
+        self.btn_value_gen_toggle = Button(
+            "Value Dataset: OFF", ACT_TOGGLE_VALUE_GEN, width=170)
+        self.btn_save_value_white = Button(
+            "White wins +1", ACT_SAVE_VALUE_WHITE, width=110)
+        self.btn_save_value_draw = Button(
+            "Draw 0", ACT_SAVE_VALUE_DRAW, width=70)
+        self.btn_save_value_black = Button(
+            "Black wins -1", ACT_SAVE_VALUE_BLACK, width=110)
+        # Tag chips — one per name in VALUE_TAGS. Their "action" is a
+        # synthetic string; the widget consumes it internally in
+        # handle_click() (mutates active_tags) rather than reporting up.
+        self.tag_chips: List[Button] = [
+            Button(f"[{tag}]", ACT_TAG_PREFIX + tag, width=110)
+            for tag in VALUE_TAGS
+        ]
+
+        # State — mutated by handle_click for tag chips, by set_value_gen_state
+        # for the toggle. UI reflects both immediately on next draw.
+        self.value_gen_enabled: bool = False
+        self.active_tags: List[str] = []  # subset of VALUE_TAGS
+
         self.last_action: Optional[str] = None
 
     # ── State refresh from the outside ──────────────────────────────────────
@@ -100,8 +140,15 @@ class ControlsWidget:
     def sync(self, mode_label: str, current_turn: Color,
              show_construction_controls: bool,
              can_step_back: bool, can_step_forward: bool,
-             settings_open: bool) -> None:
-        """Update button labels + enable/disable + highlight per app state."""
+             settings_open: bool,
+             dataset_total: int = 0,
+             dataset_session_count: int = 0) -> None:
+        """Update button labels + enable/disable + highlight per app state.
+
+        dataset_total / dataset_session_count are only shown when
+        value_gen_enabled is True — they let the toggle button surface a
+        one-line dataset summary without adding a separate UI row.
+        """
         self.btn_mode.label = f"Mode: {mode_label}"
 
         self.btn_turn_w.enabled = show_construction_controls
@@ -116,9 +163,30 @@ class ControlsWidget:
 
         self.btn_settings.highlighted = settings_open
 
+        # Value-gen toggle label reflects state + dataset stats when ON.
+        if self.value_gen_enabled:
+            self.btn_value_gen_toggle.label = (
+                f"Value Dataset: ON | {dataset_total} total"
+                f" | {dataset_session_count} this session")
+            # Auto-fit width to label so the row layout doesn't clip.
+            self.btn_value_gen_toggle.width = max(
+                260, 20 + self.font.size(self.btn_value_gen_toggle.label)[0])
+        else:
+            self.btn_value_gen_toggle.label = "Value Dataset: OFF"
+            self.btn_value_gen_toggle.width = 170
+        self.btn_value_gen_toggle.rect.width = self.btn_value_gen_toggle.width
+        self.btn_value_gen_toggle.highlighted = self.value_gen_enabled
+
+        # Tag chips highlighted iff active.
+        for chip in self.tag_chips:
+            tag = chip.action[len(ACT_TAG_PREFIX):]
+            chip.highlighted = tag in self.active_tags
+
     # ── Layout ──────────────────────────────────────────────────────────────
 
     def _layout(self) -> List[Button]:
+        # Base row: existing controls, then the value-gen toggle. When the
+        # toggle is ON, save buttons + tag chips are appended after it.
         order = [
             self.btn_evaluate,
             self.btn_mode,
@@ -126,7 +194,16 @@ class ControlsWidget:
             self.btn_step_back, self.btn_step_fwd,
             self.btn_save, self.btn_load,
             self.btn_settings,
+            self.btn_value_gen_toggle,
         ]
+        if self.value_gen_enabled:
+            order.extend([
+                self.btn_save_value_white,
+                self.btn_save_value_draw,
+                self.btn_save_value_black,
+            ])
+            order.extend(self.tag_chips)
+
         # Left-align buttons in a row
         cx = self.x + self.PAD
         cy = self.y + (self.ROW_HEIGHT - 30) // 2
@@ -138,13 +215,42 @@ class ControlsWidget:
     # ── Events ──────────────────────────────────────────────────────────────
 
     def handle_click(self, mx: int, my: int) -> Optional[str]:
-        """If a button was clicked, set self.last_action and return it."""
+        """If a button was clicked, set self.last_action and return it.
+
+        Special cases handled INTERNALLY (return None so __main__ ignores):
+          - The toggle button flips value_gen_enabled here (still reports the
+            action too, so __main__ can e.g. lazily initialize the dataset).
+          - Tag chip clicks toggle their tag in active_tags; NOT reported up.
+        """
         self.last_action = None
         for b in self._layout():
             if b.hit(mx, my):
-                self.last_action = b.action
-                return b.action
+                action = b.action
+                # Tag chip: toggle internally, don't report.
+                if action.startswith(ACT_TAG_PREFIX):
+                    tag = action[len(ACT_TAG_PREFIX):]
+                    if tag in self.active_tags:
+                        self.active_tags.remove(tag)
+                    else:
+                        self.active_tags.append(tag)
+                    return None
+                # Value-gen toggle: flip local state, then let __main__ know
+                # so it can start a dataset session on first-ON.
+                if action == ACT_TOGGLE_VALUE_GEN:
+                    self.value_gen_enabled = not self.value_gen_enabled
+                self.last_action = action
+                return action
         return None
+
+    # ── External state setters ──────────────────────────────────────────────
+
+    def set_value_gen_enabled(self, enabled: bool) -> None:
+        """External override, e.g. if __main__ wants to force-disable on error."""
+        self.value_gen_enabled = enabled
+
+    def get_active_tags(self) -> List[str]:
+        """Snapshot of currently-active tags. Returned by copy — safe to keep."""
+        return list(self.active_tags)
 
     # ── Drawing ─────────────────────────────────────────────────────────────
 
