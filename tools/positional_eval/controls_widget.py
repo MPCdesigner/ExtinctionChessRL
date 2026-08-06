@@ -184,10 +184,17 @@ class ControlsWidget:
 
     # ── Layout ──────────────────────────────────────────────────────────────
 
+    # Widget-total height is always 2 * ROW_HEIGHT so BOARD_Y / EVAL_AREA_Y
+    # in __main__.py can be constants (never jumps when the user toggles
+    # Value Dataset mode). The second row simply contains no buttons when
+    # value_gen_enabled is False.
+    def total_height(self) -> int:
+        return 2 * self.ROW_HEIGHT
+
     def _layout(self) -> List[Button]:
-        # Base row: existing controls, then the value-gen toggle. When the
-        # toggle is ON, save buttons + tag chips are appended after it.
-        order = [
+        # Primary row: original tool controls + the value-gen toggle. The
+        # toggle stays on the primary row so the feature is always discoverable.
+        primary = [
             self.btn_evaluate,
             self.btn_mode,
             self.btn_turn_w, self.btn_turn_b,
@@ -196,21 +203,32 @@ class ControlsWidget:
             self.btn_settings,
             self.btn_value_gen_toggle,
         ]
+        # Secondary row: value-gen save + tag chips. Only laid out when the
+        # toggle is ON, but the row's space is always reserved (see total_height).
+        secondary: List[Button] = []
         if self.value_gen_enabled:
-            order.extend([
+            secondary = [
                 self.btn_save_value_white,
                 self.btn_save_value_draw,
                 self.btn_save_value_black,
-            ])
-            order.extend(self.tag_chips)
+            ] + self.tag_chips
 
-        # Left-align buttons in a row
+        # Position primary row
         cx = self.x + self.PAD
         cy = self.y + (self.ROW_HEIGHT - 30) // 2
-        for b in order:
+        for b in primary:
             b.rect.topleft = (cx, cy)
             cx += b.width + self.PAD
-        return order
+
+        # Position secondary row (skipped cleanly if empty)
+        if secondary:
+            cx = self.x + self.PAD
+            cy = self.y + self.ROW_HEIGHT + (self.ROW_HEIGHT - 30) // 2
+            for b in secondary:
+                b.rect.topleft = (cx, cy)
+                cx += b.width + self.PAD
+
+        return primary + secondary
 
     # ── Events ──────────────────────────────────────────────────────────────
 
@@ -255,13 +273,25 @@ class ControlsWidget:
     # ── Drawing ─────────────────────────────────────────────────────────────
 
     def draw(self, surface: pygame.Surface) -> None:
-        # Row background
+        # Full two-row background so the reserved secondary-row space blends
+        # with the primary row even when it has no buttons.
+        h = self.total_height()
         pygame.draw.rect(
             surface, (250, 250, 250),
-            pygame.Rect(self.x, self.y, self.total_width, self.ROW_HEIGHT))
+            pygame.Rect(self.x, self.y, self.total_width, h))
+        # Divider between primary and secondary rows (only when there's
+        # something on the secondary row — otherwise the divider looks
+        # like an orphan line).
+        if self.value_gen_enabled:
+            pygame.draw.line(
+                surface, (225, 225, 225),
+                (self.x, self.y + self.ROW_HEIGHT),
+                (self.x + self.total_width, self.y + self.ROW_HEIGHT))
+        # Outer separator under the whole controls area (was already here
+        # for the single-row layout — just shifted down).
         pygame.draw.line(
             surface, (200, 200, 200),
-            (self.x, self.y + self.ROW_HEIGHT),
-            (self.x + self.total_width, self.y + self.ROW_HEIGHT))
+            (self.x, self.y + h),
+            (self.x + self.total_width, self.y + h))
         for b in self._layout():
             b.draw(surface, self.font)

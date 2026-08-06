@@ -54,8 +54,9 @@ from .value_dataset import ValueDataset, default_dataset_path  # noqa: E402
 
 # ── Screen layout ────────────────────────────────────────────────────────────
 SCREEN_W = 1500
-SCREEN_H = 900
-CONTROLS_HEIGHT = 40
+SCREEN_H = 940   # +40 vs pre-value-drilling: second controls row is always
+                  # reserved so BOARD_Y is constant regardless of value-gen state
+CONTROLS_HEIGHT = 80   # 2 * ControlsWidget.ROW_HEIGHT (see controls_widget.py)
 BOARD_SIZE = 520
 BOARD_X = 12
 BOARD_Y = CONTROLS_HEIGHT + 12
