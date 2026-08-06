@@ -191,8 +191,13 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     # Atomic write via tmp + os.replace (matches alphazero.py's
     # atomic_savez_compressed pattern — see src/alphazero.py:68-73).
+    # Passing a file OBJECT (not a path string) so numpy doesn't auto-append
+    # ".npz" to our tmp filename — otherwise the actual file lands at
+    # "<output>.tmp.npz" and os.replace's lookup of "<output>.tmp" fails
+    # with FileNotFoundError.
     tmp = args.output + ".tmp"
-    np.savez_compressed(tmp, boards=boards, policies=policies, values=values)
+    with open(tmp, "wb") as f:
+        np.savez_compressed(f, boards=boards, policies=policies, values=values)
     os.replace(tmp, args.output)
 
     print(f"[build_value_drill_npz] wrote {len(boards)} positions -> "
