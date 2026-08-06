@@ -41,12 +41,15 @@ from .controls_widget import (  # noqa: E402
     ControlsWidget,
     ACT_EVALUATE, ACT_TOGGLE_MODE, ACT_SET_TURN_W, ACT_SET_TURN_B,
     ACT_STEP_BACK, ACT_STEP_FWD, ACT_SAVE, ACT_LOAD, ACT_TOGGLE_SETTINGS,
+    ACT_TOGGLE_VALUE_GEN,
+    ACT_SAVE_VALUE_WHITE, ACT_SAVE_VALUE_DRAW, ACT_SAVE_VALUE_BLACK,
 )
 from .settings_panel import SettingsPanel  # noqa: E402
 from .eval_column import EvalColumn  # noqa: E402
 from .position_state import PositionState, Mode  # noqa: E402
 from .model_manager import ModelManager, EvalResult, SIM_UNLIMITED  # noqa: E402
 from .startup_dialog import pick_models  # noqa: E402
+from .value_dataset import ValueDataset, default_dataset_path  # noqa: E402
 
 
 # ── Screen layout ────────────────────────────────────────────────────────────
@@ -90,6 +93,14 @@ class App:
         self.vert_scroll = 0
         # Transient status message
         self.status_message: str = ""
+
+        # Value-drilling dataset. Loaded eagerly (cheap — small JSON file);
+        # a session is not started until the user actually toggles on
+        # generation mode, so pure evaluation workflows leave zero trace.
+        self.dataset = ValueDataset(default_dataset_path())
+        # Count of entries added in the current tool run — used for the
+        # toggle button's compact status label ("K this session").
+        self._session_entry_count = 0
 
         # Live evaluation progress (updated by worker thread, read by main).
         # Simple dict + Lock is enough — we're single-writer, single-reader.
@@ -342,6 +353,35 @@ class App:
             if ok:
                 self._restore_or_clear_results()
 
+    # ── Value-dataset UI helpers ───────────────────────────────────────────
+
+    def _value_match_text(self) -> str:
+        """One-line summary of dataset matches for the current position.
+
+        Returns "" if the current position has never been saved. Otherwise
+        returns e.g. "In dataset: 2x +1, 1x -1  [forced_win, material_adv]".
+        The trailing active-tags section shows what tags WOULD be applied on
+        the next save (they persist across saves until user toggles them).
+        """
+        breakdown = self.dataset.get_value_breakdown(self.state.to_dict())
+        active_tags = self.controls.get_active_tags()
+        parts = []
+        if breakdown.get(1, 0):
+            parts.append(f"{breakdown[1]}x +1")
+        if breakdown.get(0, 0):
+            parts.append(f"{breakdown[0]}x 0")
+        if breakdown.get(-1, 0):
+            parts.append(f"{breakdown[-1]}x -1")
+
+        # Always show active tags (even with no dataset match) so the user
+        # can see what's set BEFORE saving anything.
+        tag_part = f"  [{', '.join(active_tags)}]" if active_tags else ""
+
+        if not parts:
+            # No dataset match — only render if there are active tags to show.
+            return f"Not in dataset{tag_part}" if tag_part else ""
+        return "In dataset: " + ", ".join(parts) + tag_part
+
     # ── Button dispatch ────────────────────────────────────────────────────
 
     def _dispatch(self, action: str) -> None:
@@ -374,6 +414,96 @@ class App:
             self._load_position()
         elif action == ACT_TOGGLE_SETTINGS:
             self.settings.toggle()
+        elif action == ACT_TOGGLE_VALUE_GEN:
+            # controls_widget already flipped its internal enabled flag; we
+            # just react. First time ON in this run: lazily start a session
+            # and print a summary of the existing dataset so the user knows
+            # what they're building on top of.
+            if self.controls.value_gen_enabled:
+                if self.dataset.current_session_id() is None:
+                    self.dataset.start_session()
+                sessions = self.dataset.session_summary()
+                self.status_message = (
+                    f"Value dataset: {self.dataset.total_count()} positions "
+                    f"across {len(sessions)} sessions | "
+                    f"current session: {self.dataset.current_session_id()}"
+                )
+            else:
+                self.status_message = "Value dataset generation OFF"
+        elif action == ACT_SAVE_VALUE_WHITE:
+            self._save_value_entry(1)
+        elif action == ACT_SAVE_VALUE_DRAW:
+            self._save_value_entry(0)
+        elif action == ACT_SAVE_VALUE_BLACK:
+            self._save_value_entry(-1)
+
+    # ── Value-drilling save flow ───────────────────────────────────────────
+
+    def _save_value_entry(self, value: int) -> None:
+        """Add the current position to the value-drilling dataset.
+
+        If the position (semantic key — see value_dataset._canonical_position_key)
+        already exists in the dataset, show a modal confirm dialog with the
+        per-value breakdown before appending. Duplicates ARE allowed by design;
+        the warning is there so the user doesn't do it by accident.
+        """
+        # Only Game Setup positions carry move_history; Construction-mode
+        # positions have zero NN history planes at export time (out of
+        # distribution). Warn but don't refuse — user's choice.
+        pos_dict = self.state.to_dict()
+
+        # Existing entries for this position
+        breakdown = self.dataset.get_value_breakdown(pos_dict)
+        total_existing = sum(breakdown.values())
+        proceed = True
+        if total_existing > 0:
+            proceed = self._confirm_duplicate_save(value, breakdown)
+
+        if not proceed:
+            self.status_message = "Value save cancelled."
+            return
+
+        tags = self.controls.get_active_tags()
+        # Extra safety: warn on Construction-mode saves (they'll have zero
+        # history planes at export — out of distribution for the NN).
+        if self.state.mode == Mode.CONSTRUCTION:
+            self.status_message = (
+                f"Saved value={value:+d} (Construction mode — zero history "
+                f"planes at export; use Game Setup for real games)"
+            )
+        else:
+            self.status_message = (
+                f"Saved value={value:+d}"
+                + (f" tags={','.join(tags)}" if tags else "")
+                + f" | session count: {self._session_entry_count + 1}"
+            )
+        self.dataset.add_entry(pos_dict, value, tags)
+        self._session_entry_count += 1
+
+    def _confirm_duplicate_save(self, new_value: int,
+                                breakdown: Dict[int, int]) -> bool:
+        """Modal confirm dialog for duplicate-save. Returns True to proceed."""
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            msg = (
+                f"This position was already saved:\n"
+                f"  {breakdown.get(1, 0)} times with value +1\n"
+                f"  {breakdown.get(0, 0)} times with value 0\n"
+                f"  {breakdown.get(-1, 0)} times with value -1\n\n"
+                f"Save again with value {new_value:+d}?"
+            )
+            result = messagebox.askyesno(
+                "Duplicate position", msg, parent=root)
+            root.destroy()
+            return bool(result)
+        except Exception as e:
+            # If the dialog can't open, err on the side of not saving.
+            self.status_message = f"Confirm dialog failed: {e}. Not saved."
+            return False
 
     # ── Save / Load ────────────────────────────────────────────────────────
 
@@ -523,6 +653,8 @@ class App:
                               and self.state.current_step()
                               < self.state.move_history_length()),
             settings_open=self.settings.is_open(),
+            dataset_total=self.dataset.total_count(),
+            dataset_session_count=self._session_entry_count,
         )
 
     # ── Draw frame ─────────────────────────────────────────────────────────
@@ -551,12 +683,25 @@ class App:
         self.controls.draw(self.screen)
 
         # Status message
+        status_y_base = STATUS_Y + (self.palette.height + 8
+                                    if self.state.mode == Mode.CONSTRUCTION
+                                    else 0)
         if self.status_message:
             text = self.font_status.render(
                 self.status_message, True, (30, 30, 30))
-            y = STATUS_Y + (self.palette.height + 8
-                            if self.state.mode == Mode.CONSTRUCTION else 0)
-            self.screen.blit(text, (BOARD_X, y))
+            self.screen.blit(text, (BOARD_X, status_y_base))
+
+        # Position-match indicator — only when value generation is ON. Shows
+        # whether the current position is already in the dataset (and if so,
+        # the per-value breakdown + active tags). Renders one line below the
+        # status message so it doesn't clobber the "Evaluation complete." /
+        # "Save cancelled." transient messages.
+        if self.controls.value_gen_enabled:
+            match_text = self._value_match_text()
+            if match_text:
+                indicator_y = status_y_base + 18
+                text = self.font_status.render(match_text, True, (80, 60, 20))
+                self.screen.blit(text, (BOARD_X, indicator_y))
 
         # Turn indicator
         turn_str = (f"To move: "
