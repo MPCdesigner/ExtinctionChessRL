@@ -48,12 +48,21 @@ class SettingsPanel:
         self.model_labels = list(model_labels)
         self.model_enabled = [True] * len(model_labels)
 
-        # Display options — session-only (not persisted). Extensible: to add
-        # a new toggle, append (attribute_name, label) here and everything
-        # else (layout, click, draw) handles it automatically.
+        # Display options — session-only (not persisted).
+        # Boolean checkboxes: add via _display_options list.
+        # Cyclable numeric presets: add via _display_presets list.
         self.highlight_endangered: bool = False
         self._display_options = [
             ("highlight_endangered", "Highlight endangered pieces"),
+        ]
+        # Max moves shown per eval column section — how many top moves to
+        # display before truncating. Defaults to 20 (prior tool behavior).
+        # Preset list is small so cycling is quick.
+        self._max_moves_shown_presets = [20, 25, 30, 35, 40]
+        self._max_moves_shown_index = 0
+        self._display_presets = [
+            ("max moves shown", "_max_moves_shown_presets",
+             "_max_moves_shown_index", "{}"),
         ]
 
         # MCTS parameters — session-only. Defaults MATCH the tool's current
@@ -100,6 +109,9 @@ class SettingsPanel:
 
     def highlight_endangered_enabled(self) -> bool:
         return self.highlight_endangered
+
+    def get_max_moves_shown(self) -> int:
+        return self._max_moves_shown_presets[self._max_moves_shown_index]
 
     # ── MCTS parameter accessors ──────────────────────────────────────────
 
@@ -156,10 +168,24 @@ class SettingsPanel:
             self.WIDTH - self.PAD * 2, self.ROW_HEIGHT - 2,
         )
 
+    def _display_preset_row_rect(self, index: int) -> pygame.Rect:
+        """Cyclable-preset rows sit below the boolean checkboxes in the
+        Display options section."""
+        y = (self._options_start_y() + self.HEADER_HEIGHT
+             + len(self._display_options) * self.ROW_HEIGHT
+             + index * self.ROW_HEIGHT)
+        return pygame.Rect(
+            self.x + self.PAD, y,
+            self.WIDTH - self.PAD * 2, self.ROW_HEIGHT - 2,
+        )
+
     def _mcts_start_y(self) -> int:
-        """Y position of the 'MCTS parameters' section (below display options)."""
-        opts_end = self._options_start_y() + self.HEADER_HEIGHT + \
-                   len(self._display_options) * self.ROW_HEIGHT + self.PAD
+        """Y position of the 'MCTS parameters' section (below display options
+        — accounts for BOTH checkboxes and cyclable presets)."""
+        opts_end = (self._options_start_y() + self.HEADER_HEIGHT
+                    + (len(self._display_options)
+                       + len(self._display_presets)) * self.ROW_HEIGHT
+                    + self.PAD)
         return opts_end
 
     def _mcts_row_rect(self, index: int) -> pygame.Rect:
@@ -194,6 +220,12 @@ class SettingsPanel:
         for i, (attr_name, _label) in enumerate(self._display_options):
             if self._option_row_rect(i).collidepoint(mx, my):
                 setattr(self, attr_name, not getattr(self, attr_name))
+                return True
+
+        # Display preset row hit tests (cycle to next preset value)
+        for i, (_label, presets_attr, index_attr, _fmt) in enumerate(self._display_presets):
+            if self._display_preset_row_rect(i).collidepoint(mx, my):
+                self._cycle_mcts_param(index_attr, presets_attr)
                 return True
 
         # MCTS parameter row hit tests (cycle to next preset value)
@@ -260,6 +292,14 @@ class SettingsPanel:
             row = self._option_row_rect(i)
             checked = bool(getattr(self, attr_name))
             self._draw_checkbox(surface, row, checked, label)
+
+        # Display preset rows (cyclable values — same visual as MCTS rows)
+        for i, (label, presets_attr, index_attr, fmt) in enumerate(self._display_presets):
+            row = self._display_preset_row_rect(i)
+            value = getattr(self, presets_attr)[getattr(self, index_attr)]
+            is_default = (getattr(self, index_attr) == 0)
+            self._draw_mcts_row(surface, row, label, fmt.format(value),
+                                is_default)
 
         # Header: MCTS parameters
         y = self._mcts_start_y()

@@ -879,6 +879,10 @@ class App:
         return self.settings.selected_model_indices()
 
     def _draw_eval_area(self):
+        # Sync move-display cap from settings before laying out columns.
+        # Cheap; safe to do every frame.
+        self.eval_col.max_moves_shown = self.settings.get_max_moves_shown()
+
         # Scroll arrows
         left_rect = pygame.Rect(EVAL_AREA_X, EVAL_AREA_Y - 4, 24, 22)
         right_rect = pygame.Rect(EVAL_AREA_X + 30, EVAL_AREA_Y - 4, 24, 22)

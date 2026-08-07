@@ -6,12 +6,15 @@ Each column stacks sections vertically, one per sim count. Each section shows:
                        "d2-d4     22.5%"
                        ...
 
-Only moves with non-zero probability/visits are shown, up to a cap (20).
+Only moves with non-zero probability/visits are shown, up to a cap that's
+adjustable via settings (defaults to 20; presets: 20/25/30/35/40).
 
 Owner is responsible for:
   - Providing the current position + latest evaluation results dict
   - Managing horizontal scroll offset if more columns than fit on screen
   - Managing per-column vertical scroll offset
+  - Setting `max_moves_shown` on the widget instance if the setting differs
+    from the default 20
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import pygame
 from .model_manager import EvalResult, SIM_UNLIMITED
 
 
-MAX_MOVES_SHOWN = 20  # cap; stop earlier when we hit a zero-prob entry
+DEFAULT_MAX_MOVES_SHOWN = 20  # historic default; see EvalColumn.max_moves_shown
 
 
 class EvalColumn:
@@ -43,11 +46,15 @@ class EvalColumn:
         self.font_header = pygame.font.SysFont("Arial", 15, bold=True)
         self.font_sub = pygame.font.SysFont("Arial", 12, bold=True)
         self.font_row = pygame.font.SysFont("Consolas,Menlo,Courier", 12)
+        # Move display cap — settable from the outside (see settings panel
+        # "max moves shown" cyclable preset). Reflected in the SAME frame
+        # since __main__ sets this before every draw call.
+        self.max_moves_shown = DEFAULT_MAX_MOVES_SHOWN
 
     # ── Layout math ─────────────────────────────────────────────────────────
 
     def section_height(self, n_moves: int) -> int:
-        rows = min(n_moves, MAX_MOVES_SHOWN)
+        rows = min(n_moves, self.max_moves_shown)
         return self.SECTION_HEADER_HEIGHT + rows * self.MOVE_ROW_HEIGHT
 
     def column_total_height(self, results: Dict[int, EvalResult],
@@ -127,7 +134,7 @@ class EvalColumn:
 
         # Move rows
         if result is not None:
-            rows_to_show = min(len(result.moves), MAX_MOVES_SHOWN)
+            rows_to_show = min(len(result.moves), self.max_moves_shown)
             for i in range(rows_to_show):
                 move, prob, visits = result.moves[i]
                 if prob <= 0.0:
