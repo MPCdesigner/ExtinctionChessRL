@@ -56,6 +56,31 @@ class SettingsPanel:
             ("highlight_endangered", "Highlight endangered pieces"),
         ]
 
+        # MCTS parameters — session-only. Defaults MATCH the tool's current
+        # hardcoded behavior (c_puct=2.5 from mcts_search default; noise_weight=0
+        # and dirichlet_alpha's default doesn't matter when noise_weight=0 —
+        # we pick 0.3 which is what training uses so the value is meaningful
+        # once noise is enabled). Click a param row to cycle its preset value.
+        #
+        # Presets are chosen to bracket the common range for each param:
+        #   c_puct:          2.5 (default) → higher = more exploration
+        #   noise_weight:    0.0 (default, no noise) → 0.25 = training default
+        #   dirichlet_alpha: 0.3 (training default) → higher = more uniform
+        self._c_puct_presets = [2.5, 3.0, 4.0, 5.0, 10.0]
+        self._noise_weight_presets = [0.0, 0.15, 0.25, 0.35, 0.50]
+        self._dirichlet_alpha_presets = [0.3, 0.6, 1.0, 2.0]
+        self._c_puct_index = 0
+        self._noise_weight_index = 0
+        self._dirichlet_alpha_index = 0
+
+        # Config-driven so adding a new param is a one-line change here.
+        # Each tuple: (label, presets_attr_name, index_attr_name, format_str).
+        self._mcts_params = [
+            ("c_puct",          "_c_puct_presets",          "_c_puct_index",          "{:.2g}"),
+            ("noise_weight",    "_noise_weight_presets",    "_noise_weight_index",    "{:.2f}"),
+            ("dirichlet_alpha", "_dirichlet_alpha_presets", "_dirichlet_alpha_index", "{:.2g}"),
+        ]
+
         self.font_header = pygame.font.SysFont("Arial", 14, bold=True)
         self.font_row = pygame.font.SysFont("Arial", 13)
 
@@ -75,6 +100,23 @@ class SettingsPanel:
 
     def highlight_endangered_enabled(self) -> bool:
         return self.highlight_endangered
+
+    # ── MCTS parameter accessors ──────────────────────────────────────────
+
+    def get_c_puct(self) -> float:
+        return self._c_puct_presets[self._c_puct_index]
+
+    def get_noise_weight(self) -> float:
+        return self._noise_weight_presets[self._noise_weight_index]
+
+    def get_dirichlet_alpha(self) -> float:
+        return self._dirichlet_alpha_presets[self._dirichlet_alpha_index]
+
+    def _cycle_mcts_param(self, index_attr: str, presets_attr: str) -> None:
+        """Advance the given param's index, wrapping around at the end."""
+        cur = getattr(self, index_attr)
+        n = len(getattr(self, presets_attr))
+        setattr(self, index_attr, (cur + 1) % n)
 
     # ── Layout helpers ─────────────────────────────────────────────────────
 
@@ -114,6 +156,19 @@ class SettingsPanel:
             self.WIDTH - self.PAD * 2, self.ROW_HEIGHT - 2,
         )
 
+    def _mcts_start_y(self) -> int:
+        """Y position of the 'MCTS parameters' section (below display options)."""
+        opts_end = self._options_start_y() + self.HEADER_HEIGHT + \
+                   len(self._display_options) * self.ROW_HEIGHT + self.PAD
+        return opts_end
+
+    def _mcts_row_rect(self, index: int) -> pygame.Rect:
+        y = self._mcts_start_y() + self.HEADER_HEIGHT + index * self.ROW_HEIGHT
+        return pygame.Rect(
+            self.x + self.PAD, y,
+            self.WIDTH - self.PAD * 2, self.ROW_HEIGHT - 2,
+        )
+
     # ── Interaction ────────────────────────────────────────────────────────
 
     def handle_click(self, mx: int, my: int) -> bool:
@@ -139,6 +194,12 @@ class SettingsPanel:
         for i, (attr_name, _label) in enumerate(self._display_options):
             if self._option_row_rect(i).collidepoint(mx, my):
                 setattr(self, attr_name, not getattr(self, attr_name))
+                return True
+
+        # MCTS parameter row hit tests (cycle to next preset value)
+        for i, (_label, presets_attr, index_attr, _fmt) in enumerate(self._mcts_params):
+            if self._mcts_row_rect(i).collidepoint(mx, my):
+                self._cycle_mcts_param(index_attr, presets_attr)
                 return True
 
         return True  # consume the click even if it hit blank panel space
@@ -199,6 +260,41 @@ class SettingsPanel:
             row = self._option_row_rect(i)
             checked = bool(getattr(self, attr_name))
             self._draw_checkbox(surface, row, checked, label)
+
+        # Header: MCTS parameters
+        y = self._mcts_start_y()
+        header = self.font_header.render(
+            "MCTS parameters", True, (30, 30, 30))
+        surface.blit(header, (self.x + self.PAD, y + self.PAD - 8))
+
+        # MCTS param rows — click cycles the value. Non-default values are
+        # highlighted so it's obvious at a glance when the tool is running
+        # in exploration-diagnostic mode vs its normal deterministic defaults.
+        for i, (label, presets_attr, index_attr, fmt) in enumerate(self._mcts_params):
+            row = self._mcts_row_rect(i)
+            value = getattr(self, presets_attr)[getattr(self, index_attr)]
+            is_default = (getattr(self, index_attr) == 0)
+            self._draw_mcts_row(surface, row, label, fmt.format(value),
+                                is_default)
+
+    def _draw_mcts_row(self, surface: pygame.Surface, row: pygame.Rect,
+                       label: str, value_str: str, is_default: bool) -> None:
+        """Draw a cyclable MCTS-param row: label on left, value pill on right."""
+        # Label text
+        label_surf = self.font_row.render(label, True, (30, 30, 30))
+        surface.blit(label_surf, (row.left + 6, row.top + 3))
+
+        # Value "pill" on the right — highlighted when non-default so the
+        # user can see at a glance that they've changed something.
+        pill_w = 68
+        pill = pygame.Rect(row.right - pill_w - 4, row.top + 1,
+                           pill_w, row.height - 2)
+        pill_bg = (230, 230, 245) if is_default else (255, 235, 200)
+        pill_border = (150, 150, 170) if is_default else (200, 150, 60)
+        pygame.draw.rect(surface, pill_bg, pill)
+        pygame.draw.rect(surface, pill_border, pill, width=1)
+        val_surf = self.font_row.render(value_str, True, (30, 30, 30))
+        surface.blit(val_surf, val_surf.get_rect(center=pill.center))
 
     def _draw_checkbox(self, surface: pygame.Surface, row: pygame.Rect,
                        checked: bool, label: str) -> None:

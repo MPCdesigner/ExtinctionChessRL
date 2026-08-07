@@ -647,6 +647,12 @@ class App:
         def _should_stop():
             return self._stop_current_model.is_set()
 
+        # Snapshot MCTS parameters at eval start (so they don't change under
+        # the worker thread if the user clicks in settings mid-eval).
+        c_puct_val = self.settings.get_c_puct()
+        noise_weight_val = self.settings.get_noise_weight()
+        dirichlet_alpha_val = self.settings.get_dirichlet_alpha()
+
         def _worker():
             try:
                 self._eval_results = self.model_mgr.evaluate(
@@ -654,6 +660,9 @@ class App:
                     progress_callback=_on_progress,
                     live_callback=_on_live,
                     should_stop_current=_should_stop,
+                    c_puct=c_puct_val,
+                    noise_weight=noise_weight_val,
+                    dirichlet_alpha=dirichlet_alpha_val,
                 )
                 self._eval_error = None
             except Exception as e:

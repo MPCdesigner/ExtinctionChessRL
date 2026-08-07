@@ -175,6 +175,9 @@ class LoadedModel:
                             sim_progress_callback=None,
                             live_callback=None,
                             should_stop=None,
+                            c_puct: float = 2.5,
+                            noise_weight: float = 0.0,
+                            dirichlet_alpha: float = 0.3,
                             ) -> Dict[int, EvalResult]:
         """Run ONE MCTS to max(sim_counts), capturing snapshots at each
         intermediate checkpoint.
@@ -252,8 +255,9 @@ class LoadedModel:
         move_visits, root_value = mcts_search(
             game, self.evaluator,
             num_simulations=max_sims,
-            dirichlet_alpha=0.0,
-            noise_weight=0.0,
+            c_puct=c_puct,
+            dirichlet_alpha=dirichlet_alpha,
+            noise_weight=noise_weight,
             tactical_shortcuts=False,
             progress_callback=sim_progress_callback,
             checkpoint_sims=sim_counts,
@@ -340,6 +344,9 @@ class ModelManager:
                  progress_callback=None,
                  live_callback=None,
                  should_stop_current=None,
+                 c_puct: float = 2.5,
+                 noise_weight: float = 0.0,
+                 dirichlet_alpha: float = 0.3,
                  ) -> Dict[int, Dict[int, EvalResult]]:
         """Evaluate a position across selected models and sim counts.
 
@@ -421,6 +428,9 @@ class ModelManager:
                     sim_progress_callback=_prog,
                     live_callback=_live,
                     should_stop=should_stop_current,
+                    c_puct=c_puct,
+                    noise_weight=noise_weight,
+                    dirichlet_alpha=dirichlet_alpha,
                 )
                 per_sim.update(mcts_results)
 
