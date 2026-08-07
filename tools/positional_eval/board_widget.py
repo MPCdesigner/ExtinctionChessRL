@@ -53,6 +53,7 @@ class BoardWidget:
     SELECTED_TINT = (100, 180, 255, 120)
     LEGAL_TARGET_TINT = (100, 220, 100, 90)
     LAST_MOVE_TINT = (240, 230, 100, 90)
+    ENDANGERED_TINT = (255, 90, 90, 100)
 
     def __init__(self, x: int, y: int, size: int = 480):
         """Board occupies a square region of `size` pixels starting at (x, y)."""
@@ -95,10 +96,17 @@ class BoardWidget:
              selected: Optional[Position] = None,
              legal_targets: Optional[Set[Position]] = None,
              last_move_from: Optional[Position] = None,
-             last_move_to: Optional[Position] = None) -> None:
+             last_move_to: Optional[Position] = None,
+             endangered_squares: Optional[Set[Position]] = None) -> None:
         """Draw the board plus overlays.
 
         Arguments after `position_state` are optional highlights.
+
+        endangered_squares (extinction-chess-specific): squares whose piece
+        is the last of its type for its color. Rendered with a red tint
+        under other highlights so tactical stakes are visible at a glance.
+        Set only when the corresponding settings option is on; passing None
+        or empty set draws nothing.
         """
         game = position_state.get_game()
 
@@ -113,9 +121,15 @@ class BoardWidget:
                     rect,
                 )
 
-        # Highlight overlays (drawn under pieces so pieces stay legible)
+        # Highlight overlays (drawn under pieces so pieces stay legible).
+        # Endangered goes first so more transient highlights (selected,
+        # legal targets, last move) render over it if they overlap.
         overlay = pygame.Surface((self.square_size, self.square_size),
                                  pygame.SRCALPHA)
+        if endangered_squares:
+            overlay.fill(self.ENDANGERED_TINT)
+            for sq in endangered_squares:
+                surface.blit(overlay, self.square_rect(sq.rank, sq.file).topleft)
         if last_move_from is not None:
             overlay.fill(self.LAST_MOVE_TINT)
             surface.blit(overlay, self.square_rect(

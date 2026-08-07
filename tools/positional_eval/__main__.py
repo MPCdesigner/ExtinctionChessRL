@@ -354,6 +354,31 @@ class App:
             if ok:
                 self._restore_or_clear_results()
 
+    # ── Board display helpers ──────────────────────────────────────────────
+
+    def _compute_endangered_squares(self) -> set:
+        """Squares whose occupying piece is the last of its type for its color.
+
+        Returns a set of Position objects. Extinction chess loses the game
+        when a piece TYPE goes extinct, so "endangered" means "type count == 1"
+        (game.get_endangered_pieces returns the list of endangered types per
+        color; we then locate the squares those pieces occupy).
+        """
+        game = self.state.get_game()
+        endangered = set()
+        for color in (Color.WHITE, Color.BLACK):
+            types = set(game.get_endangered_pieces(color))
+            if not types:
+                continue
+            for rank in range(8):
+                for file in range(8):
+                    piece = self.state.get_piece_at(Position(rank, file))
+                    if piece is None:
+                        continue
+                    if piece.color == color and piece.piece_type in types:
+                        endangered.add(Position(rank, file))
+        return endangered
+
     # ── Value-dataset UI helpers ───────────────────────────────────────────
 
     def _value_match_text(self) -> str:
@@ -670,10 +695,19 @@ class App:
                 m.to_pos for m in self.state.get_legal_moves()
                 if m.from_pos == self.selected_square
             }
+
+        # Compute endangered squares (extinction-chess: a piece is endangered
+        # if it's the last of its type for its color). Only if the setting
+        # is on — cheap check dodges the 64-square scan otherwise.
+        endangered_squares = None
+        if self.settings.highlight_endangered_enabled():
+            endangered_squares = self._compute_endangered_squares()
+
         self.board.draw(
             self.screen, self.state,
             selected=self.selected_square,
             legal_targets=legal_targets,
+            endangered_squares=endangered_squares,
         )
 
         # Palette (construction only)

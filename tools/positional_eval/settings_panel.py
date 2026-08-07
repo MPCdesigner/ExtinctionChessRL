@@ -48,6 +48,14 @@ class SettingsPanel:
         self.model_labels = list(model_labels)
         self.model_enabled = [True] * len(model_labels)
 
+        # Display options — session-only (not persisted). Extensible: to add
+        # a new toggle, append (attribute_name, label) here and everything
+        # else (layout, click, draw) handles it automatically.
+        self.highlight_endangered: bool = False
+        self._display_options = [
+            ("highlight_endangered", "Highlight endangered pieces"),
+        ]
+
         self.font_header = pygame.font.SysFont("Arial", 14, bold=True)
         self.font_row = pygame.font.SysFont("Arial", 13)
 
@@ -64,6 +72,9 @@ class SettingsPanel:
 
     def selected_model_indices(self) -> List[int]:
         return [i for i, on in enumerate(self.model_enabled) if on]
+
+    def highlight_endangered_enabled(self) -> bool:
+        return self.highlight_endangered
 
     # ── Layout helpers ─────────────────────────────────────────────────────
 
@@ -90,6 +101,19 @@ class SettingsPanel:
             self.WIDTH - self.PAD * 2, self.ROW_HEIGHT - 2,
         )
 
+    def _options_start_y(self) -> int:
+        """Y position of the 'Display options' section (below models)."""
+        models_end = self._models_start_y() + self.HEADER_HEIGHT + \
+                     len(self.model_labels) * self.ROW_HEIGHT + self.PAD
+        return models_end
+
+    def _option_row_rect(self, index: int) -> pygame.Rect:
+        y = self._options_start_y() + self.HEADER_HEIGHT + index * self.ROW_HEIGHT
+        return pygame.Rect(
+            self.x + self.PAD, y,
+            self.WIDTH - self.PAD * 2, self.ROW_HEIGHT - 2,
+        )
+
     # ── Interaction ────────────────────────────────────────────────────────
 
     def handle_click(self, mx: int, my: int) -> bool:
@@ -109,6 +133,12 @@ class SettingsPanel:
         for i in range(len(self.model_labels)):
             if self._model_row_rect(i).collidepoint(mx, my):
                 self.model_enabled[i] = not self.model_enabled[i]
+                return True
+
+        # Display option row hit tests (checkbox toggle by attribute name)
+        for i, (attr_name, _label) in enumerate(self._display_options):
+            if self._option_row_rect(i).collidepoint(mx, my):
+                setattr(self, attr_name, not getattr(self, attr_name))
                 return True
 
         return True  # consume the click even if it hit blank panel space
@@ -156,15 +186,32 @@ class SettingsPanel:
         for i, label in enumerate(self.model_labels):
             row = self._model_row_rect(i)
             checked = self.model_enabled[i]
-            box = pygame.Rect(row.left + 4, row.centery - 6, 12, 12)
-            pygame.draw.rect(surface, (250, 250, 250), box)
-            pygame.draw.rect(surface, (80, 80, 80), box, width=1)
-            if checked:
-                pygame.draw.line(surface, (30, 120, 220),
-                                 (box.left + 2, box.centery),
-                                 (box.centerx - 1, box.bottom - 3), 2)
-                pygame.draw.line(surface, (30, 120, 220),
-                                 (box.centerx - 1, box.bottom - 3),
-                                 (box.right - 1, box.top + 2), 2)
-            text = self.font_row.render(label, True, (30, 30, 30))
-            surface.blit(text, (row.left + 24, row.top + 3))
+            self._draw_checkbox(surface, row, checked, label)
+
+        # Header: display options
+        y = self._options_start_y()
+        header = self.font_header.render(
+            "Display options", True, (30, 30, 30))
+        surface.blit(header, (self.x + self.PAD, y + self.PAD - 8))
+
+        # Display option checkboxes
+        for i, (attr_name, label) in enumerate(self._display_options):
+            row = self._option_row_rect(i)
+            checked = bool(getattr(self, attr_name))
+            self._draw_checkbox(surface, row, checked, label)
+
+    def _draw_checkbox(self, surface: pygame.Surface, row: pygame.Rect,
+                       checked: bool, label: str) -> None:
+        """Shared draw helper for a labeled checkbox row (models + options)."""
+        box = pygame.Rect(row.left + 4, row.centery - 6, 12, 12)
+        pygame.draw.rect(surface, (250, 250, 250), box)
+        pygame.draw.rect(surface, (80, 80, 80), box, width=1)
+        if checked:
+            pygame.draw.line(surface, (30, 120, 220),
+                             (box.left + 2, box.centery),
+                             (box.centerx - 1, box.bottom - 3), 2)
+            pygame.draw.line(surface, (30, 120, 220),
+                             (box.centerx - 1, box.bottom - 3),
+                             (box.right - 1, box.top + 2), 2)
+        text = self.font_row.render(label, True, (30, 30, 30))
+        surface.blit(text, (row.left + 24, row.top + 3))
