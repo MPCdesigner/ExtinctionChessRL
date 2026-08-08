@@ -16,6 +16,17 @@ if __name__ == "__main__":
         # 1.50x wall-time speedup measured on iter 930 (job 586087). Falls
         # back to fresh MCTS on any promote() failure. Rollback: set to False.
         use_tree_reuse=True,
+        # ── Exploration bump (enabled Aug 8 2026, iter 971+) ──
+        # Historic values were dirichlet_alpha=0.3, noise_weight=0.25.
+        # Bumped to force wider exploration during self-play — combats
+        # policy-head prior collapse on rare-move planes (R/B/K underpromotions
+        # never got MCTS visits at 800 sims on a forced-win position at iter 970,
+        # verified in the positional_eval tool). Higher alpha spreads noise
+        # more uniformly across children (raising the exploration floor);
+        # higher noise_weight increases the noise's contribution to the noised
+        # prior. Rollback: revert both values to 0.3/0.25.
+        dirichlet_alpha=1.0,
+        noise_weight=0.5,
         # instant_win_positions=1000,  # Disabled for now; revisit at iter 270
         hard_win_positions=300,
         extra_hard_win_positions=0,  # disabled to stop further damage

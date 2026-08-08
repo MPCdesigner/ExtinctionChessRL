@@ -1751,6 +1751,18 @@ def train(
     # (job 586087, Aug 3 2026). See commands.txt "MCTS SUBTREE REUSE" section
     # for design + rollback procedure.
     use_tree_reuse: bool = False,
+    # ── Self-play exploration (dirichlet noise at root of each self-play game) ──
+    # Default values match the historic training config (dirichlet_alpha=0.3,
+    # noise_weight=0.25, mirroring mcts_search's own defaults and the
+    # AlphaZero paper). Raise both to force more exploration of low-prior
+    # moves — needed to combat policy-head prior collapse on rare-move planes
+    # (e.g. underpromotions to R/B/K on the winning promotion square).
+    # Diagnostic (Aug 8 2026 tool session): with dirichlet_alpha=0.3, noise_weight=0.25
+    # the R/B/K promotions never get MCTS visits at 800 sims on a forced-win
+    # position because raw priors have collapsed below the UCB exploration
+    # floor (see commands.txt for the mechanism + expected floor calculation).
+    dirichlet_alpha: float = 0.3,
+    noise_weight: float = 0.25,
     instant_win_positions: int = 0,
     hard_win_positions: int = 0,
     extra_hard_win_positions: int = 0,
@@ -1876,6 +1888,8 @@ def train(
             game_results = batched_self_play(
                 model, device, games_per_iteration,
                 num_simulations=num_simulations,
+                dirichlet_alpha=dirichlet_alpha,
+                noise_weight=noise_weight,
                 temp_threshold=30,
                 num_parallel=min(50, games_per_iteration),
                 max_batch=512,
