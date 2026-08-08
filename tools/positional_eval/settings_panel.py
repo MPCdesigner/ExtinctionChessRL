@@ -83,11 +83,17 @@ class SettingsPanel:
         self._dirichlet_alpha_index = 0
 
         # Config-driven so adding a new param is a one-line change here.
-        # Each tuple: (label, presets_attr_name, index_attr_name, format_str).
+        # Each tuple: (label, presets_attr, index_attr, format_str, training_idx).
+        # training_idx = index in the presets list whose value matches what
+        # training self-play uses (see src/alphazero.py mcts_search defaults
+        # + noise_weight=0.25 in batched_self_play). The pill is grey when
+        # the current index == training_idx, orange otherwise — so at a
+        # glance you can see whether the tool is running in "would-match-
+        # training" conditions or is in exploratory-diagnostic mode.
         self._mcts_params = [
-            ("c_puct",          "_c_puct_presets",          "_c_puct_index",          "{:.2g}"),
-            ("noise_weight",    "_noise_weight_presets",    "_noise_weight_index",    "{:.2f}"),
-            ("dirichlet_alpha", "_dirichlet_alpha_presets", "_dirichlet_alpha_index", "{:.2g}"),
+            ("c_puct",          "_c_puct_presets",          "_c_puct_index",          "{:.2g}", 0),  # 2.5
+            ("noise_weight",    "_noise_weight_presets",    "_noise_weight_index",    "{:.2f}", 2),  # 0.25
+            ("dirichlet_alpha", "_dirichlet_alpha_presets", "_dirichlet_alpha_index", "{:.2g}", 0),  # 0.3
         ]
 
         self.font_header = pygame.font.SysFont("Arial", 14, bold=True)
@@ -229,7 +235,7 @@ class SettingsPanel:
                 return True
 
         # MCTS parameter row hit tests (cycle to next preset value)
-        for i, (_label, presets_attr, index_attr, _fmt) in enumerate(self._mcts_params):
+        for i, (_label, presets_attr, index_attr, _fmt, _tidx) in enumerate(self._mcts_params):
             if self._mcts_row_rect(i).collidepoint(mx, my):
                 self._cycle_mcts_param(index_attr, presets_attr)
                 return True
@@ -307,25 +313,34 @@ class SettingsPanel:
             "MCTS parameters", True, (30, 30, 30))
         surface.blit(header, (self.x + self.PAD, y + self.PAD - 8))
 
-        # MCTS param rows — click cycles the value. Non-default values are
-        # highlighted so it's obvious at a glance when the tool is running
-        # in exploration-diagnostic mode vs its normal deterministic defaults.
-        for i, (label, presets_attr, index_attr, fmt) in enumerate(self._mcts_params):
+        # MCTS param rows — click cycles the value. Grey pill when the value
+        # matches what TRAINING self-play uses (not what the tool defaults to
+        # — which for noise_weight is 0.0 vs training's 0.25). Orange pill
+        # means "this differs from training", i.e. you're running in
+        # exploration-diagnostic mode and results won't match self-play.
+        for i, (label, presets_attr, index_attr, fmt, training_idx) in enumerate(self._mcts_params):
             row = self._mcts_row_rect(i)
             value = getattr(self, presets_attr)[getattr(self, index_attr)]
-            is_default = (getattr(self, index_attr) == 0)
+            matches_training = (getattr(self, index_attr) == training_idx)
             self._draw_mcts_row(surface, row, label, fmt.format(value),
-                                is_default)
+                                matches_training)
 
     def _draw_mcts_row(self, surface: pygame.Surface, row: pygame.Rect,
                        label: str, value_str: str, is_default: bool) -> None:
-        """Draw a cyclable MCTS-param row: label on left, value pill on right."""
+        """Draw a cyclable MCTS-param row: label on left, value pill on right.
+
+        is_default here means "value indicates the default/reference state"
+        — grey pill (calm). Any other state = orange pill (deviation warning).
+        For MCTS params the reference is TRAINING's value (see
+        _mcts_params); for display presets it's index=0.
+        """
         # Label text
         label_surf = self.font_row.render(label, True, (30, 30, 30))
         surface.blit(label_surf, (row.left + 6, row.top + 3))
 
-        # Value "pill" on the right — highlighted when non-default so the
-        # user can see at a glance that they've changed something.
+        # Value "pill" on the right — highlighted when deviating from the
+        # reference value so the user can see at a glance that they've
+        # changed something.
         pill_w = 68
         pill = pygame.Rect(row.right - pill_w - 4, row.top + 1,
                            pill_w, row.height - 2)
