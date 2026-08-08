@@ -717,6 +717,97 @@ cluster for at least 10 iters without regression.
   cd ~/extinction-chess/src && python3 setup.py build_ext --inplace 2>&1 | tail -5
 
 
+== EXPLORATION BUMP (dirichlet_alpha + noise_weight) ==
+
+┌─ DEPLOYMENT STATUS (updated Aug 8 2026) ────────────────────────────────┐
+│ Status:  ACTIVE from job 588242's auto-resubmit onwards                 │
+│          (job 588242 iters 971+ still on OLD values — Python cached)    │
+│ Values:  dirichlet_alpha=1.0 (was 0.3)                                  │
+│          noise_weight=0.5 (was 0.25)                                    │
+│ Commit:  3e19418 on history-planes                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ WHY ───────────────────────────────────────────────────────────────────┐
+│ Diagnosed policy-head prior collapse on rare-move planes (specifically  │
+│ R/B/K underpromotions on winning-promotion squares). Priors had         │
+│ collapsed to ~10^-8, well below the UCB exploration floor of ~0.0004    │
+│ at c_puct=2.5, N_root=800. Verified in positional_eval tool:            │
+│   - Test 1 (noise=0.35, alpha=0.6): too weak, R/B/K get 0 visits at 800 │
+│   - Test 2 (c_puct=5, no noise): USELESS, priors stay collapsed forever │
+│   - Test 3 (noise=0.5, alpha=2.0): WORKS, R/B/K get 21-44 visits/800    │
+│ Deployed values (1.0/0.5) sit between Test 1 and Test 3 — the alpha=1.0 │
+│ transition point where Dirichlet noise becomes uniform-enough for a     │
+│ consistent per-child noise floor.                                       │
+│                                                                         │
+│ Also potentially helps the tactical/W-skew pattern at iter 970:         │
+│ tactical dropped -7pts vs iter 960, W-skew climbing 61-66%. More        │
+│ diverse self-play should broaden the model's tactical exposure.         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ HOW TO ROLLBACK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Edit src/run_training.py, revert both values to their historic settings:
+    dirichlet_alpha=0.3,
+    noise_weight=0.25,
+
+Then commit + push + SCP:
+    git add src/run_training.py
+    git commit -m "Revert exploration bump (reason=...)"
+    git push origin history-planes
+    scp -i C:\Users\henry\.ssh\id_ed25519 \
+      "c:/Users/henry/Desktop/Extinction Chess RL/src/run_training.py" \
+      h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+
+Next auto-resubmit picks up the reverted values. NO C++ rebuild
+needed — this is pure Python config. NO .so change.
+
+━━ ROLLBACK TRIGGERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Any of these = revert immediately:
+  - vs iter 100 drops below 75% (was 88% at iter 970)
+  - vs iter 810 or other rollback anchor drops below 50%
+  - Loss diverges (>50% deterioration in a single iter)
+
+Not-immediate signals worth watching (but not rollback triggers):
+  - Small regressions in tactical/win-taking during the transition
+    (expected — model needs to re-adapt to noisier training targets;
+    similar to what happened at iter 940 when reuse was first enabled)
+  - Value loss temporarily creeping up (targets are noisier at root)
+
+━━ EXPECTED TIMELINE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  iter 971-9?? (job 588242): OLD values still active (Python cache)
+  Next auto-resubmit (~20h): NEW values kick in
+  ~iter 981-990:              Some pre-bump data still in K=5 buffer
+  ~iter 995-1000:             Fully post-bump, first "real" benchmark
+  ~iter 1000+30:              Policy head should have partially
+                              rebuilt priors on R/B/K planes;
+                              verifiable in tool at DEFAULT settings
+
+━━ IN-TOOL VERIFICATION ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After ~30 iters post-bump, load the reference position (move 60 with a
+forced-mate promotion) in the positional_eval tool. Set MCTS params
+to DEFAULTS (all pills grey) — matches training config. Evaluate at
+800 sims. Success criteria:
+  - a7-b8=R, a7-b8=B, a7-b8=K each get ≥1 visit
+  - Better: they appear in the top-20 moves list
+Compare against pre-bump snapshot from Aug 8 where they got 0 visits
+at 897k sims.
+
+━━ FILES TOUCHED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  src/alphazero.py       — train() signature gains dirichlet_alpha +
+                            noise_weight kwargs (defaults preserved at
+                            historic 0.3/0.25 so bare train() calls
+                            elsewhere are unchanged); plumbed to
+                            batched_self_play at the C++ call site.
+  src/run_training.py    — actual value flip: 1.0 / 0.5
+
+Both files SCP'd Aug 8 immediately after commit 3e19418. See
+job_history.txt for the specific job the change takes effect on.
+
+
 == BENCHMARK LOG PATH CONVENTION ==
 
 Auto-benchmark writes results in two places:
