@@ -65,6 +65,13 @@ def main():
         num_parallel=min(args.num_parallel, args.num_games),
         max_batch=512,
         num_threads=args.num_threads,
+        use_tree_reuse=True,  # Aug 24: match main training. Without this,
+                              # helpers ran ~1.2x slower than reuse-enabled
+                              # main and timed out at the 2h45m SLURM limit
+                              # on trpro-slurm1 (8 consecutive iters, 985-988).
+                              # See helper_595207.log for the smoking gun:
+                              # tree_reuse=off + avg_process=916us/batch
+                              # (vs main's 513us on 2080 Ti) = ~3h/200 games.
     )
 
     # Flatten games into position-level arrays
