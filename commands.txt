@@ -274,31 +274,281 @@ this gives per-position insight.
   python -m tools.positional_eval
 
 Startup opens a tkinter file picker — multi-select model .pt files from
-models/. Once loaded, main window opens with:
+models/. Once loaded, main window (1500×940) opens with:
   - Board (left)
   - Palette (only in construction mode)
   - Model columns (right)
-  - Settings overlay (max sims + which models to include)
+  - Controls: 2-row (main row + value-gen row when toggled)
+  - Settings overlay (Max sims / Models / Display options / MCTS params)
 
 Values are displayed in WHITE'S perspective: +1 = White winning, -1 =
 Black winning. Does NOT flip with whose turn it is (internally the model
 outputs current-player-perspective; the tool converts).
 
-See memory: positional_eval_tool for full details.
+━━ Settings panel sections (top-right button) ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Max sim count (radio)
+     Which sim counts to evaluate: raw NN, 20, 50, 100, 200, 400, 800,
+     unlimited. Runs one MCTS to max(selected) and takes checkpoint
+     snapshots — cheaper than one search per sim count.
+
+  2. Include models in evaluation (checkboxes)
+     Toggle each loaded checkpoint on/off for the current eval.
+
+  3. Display options (Aug 7-8 additions)
+     - [ ] Highlight endangered pieces
+        When on, each piece that's the LAST of its type for its color
+        gets a red tint on its square. Extinction-chess-specific: losing
+        the last piece of a type ends the game, so this surfaces
+        tactical stakes at a glance.
+     - max moves shown: 20 (default) → 25 → 30 → 35 → 40
+        Cyclable button (click to advance). Bump to 40 when you need to
+        see rare-move planes (e.g., R/B/K underpromotions that fall
+        outside the default top 20).
+
+  4. MCTS parameters (Aug 7 additions)
+     Three cyclable-preset rows:
+       c_puct:          2.5 (default) / 3.0 / 4.0 / 5.0 / 10.0
+       noise_weight:    0.0 / 0.15 / 0.25 (training) / 0.35 / 0.50
+       dirichlet_alpha: 0.3 (training) / 0.6 / 1.0 / 2.0
+     Purpose: exploration diagnostic — see whether cranking noise/c_puct
+     causes normally-collapsed rare-move priors (e.g., R/B/K promotions)
+     to become visited.
+
+     Pill coloring (Aug 8 refinement):
+       GREY  = value matches TRAINING's setting (not the tool's default)
+       ORANGE = value differs from training (diagnostic-only state)
+     So all grey = you're evaluating with the same MCTS conditions
+     self-play uses. Any orange = you're in exploratory mode and
+     results won't reproduce training behavior.
+
+━━ Common exploration diagnostic recipe ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Load an interesting position (e.g., forced-mate promotion).
+2. Set max moves shown to 40 (surfaces low-prior legal moves).
+3. Evaluate at defaults (all pills grey).
+   - If a move you EXPECT to be considered (like a winning
+     underpromotion) gets 0 visits at 800 sims → policy-head prior
+     for that move is below the UCB exploration threshold (~0.0004
+     at c_puct=2.5).
+4. Bump exploration (turn all pills orange):
+   c_puct=5, noise_weight=0.35, dirichlet_alpha=0.6.
+5. Re-evaluate. If the missing move now gets visits → mechanism confirmed.
+6. Push c_puct=10, noise_weight=0.5, dirichlet_alpha=2 for maximum
+   exploration — see visits recipe from Aug 8 tool session.
+
+━━ Concurrent-instances warning ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Only run ONE instance of the tool at a time. The value-dataset storage
+(dataset/value_targets.json) uses atomic-write via tmp + os.replace, but
+each process holds its own in-memory session/entry lists. Two concurrent
+instances can silently overwrite each other's changes when they both
+save. Pure evaluation (no value-gen toggle) is fine because it doesn't
+write to the dataset.
+
+See memory: positional_eval_tool for pre-Aug-7 history.
+
+
+== VALUE DRILLING PIPELINE (hand-curated training data) ==
+
+┌─ STATUS (Aug 5-6 2026) ─────────────────────────────────────────────────┐
+│ Feature:  Curate positions in the positional_eval tool → save with     │
+│           value target → upload to cluster as an npz that behaves like │
+│           self-play data with zero-filled policies.                    │
+│ Storage:  dataset/value_targets.json (local, gitignored)               │
+│ Export:   tools/build_value_drill_npz.py → iter_9999_valdrill.npz      │
+│ Uploaded: SCP to cluster ~/extinction-chess/replay_buffer/             │
+│ Effect:   Loaded into training buffer alongside self-play data;        │
+│           value MSE hits, policy loss contributes 0 (zero targets).    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ Why value-only (not policy) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The value head is a single scalar — it can't over-memorize hand-authored
+positions the way a full 4864-dim policy target could. Previous experiments
+with policy drilling caused overfitting; value drilling is structurally
+safer. Zero-filled policy target means cross-entropy loss contributes 0
+per hand-set sample (no gradient on policy head). Only value MSE hits.
+
+━━ Storage: dataset/value_targets.json ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Managed by tools/positional_eval/value_dataset.py. Data model:
+
+  {
+    "sessions": [
+      {"session_id": "2026-08-05T22:03:00", "started_at": "...",
+       "entry_count": 12},
+      ...
+    ],
+    "entries": [
+      {
+        "value": 1,                          // -1 / 0 / +1, White perspective
+        "tags": ["forced_win"],              // record-keeping only
+        "session_id": "2026-08-05T22:03:00", // tool-run identifier
+        "added_at": "2026-08-05T22:03:14",
+        "position": {                        // PositionState.to_dict()
+          "mode": "game_setup",
+          "board": [[...]],
+          "to_move": "W",
+          "en_passant": null,
+          "halfmove_clock": 12,
+          "fullmove_number": 25,
+          "move_history": [...]              // ← replayed at export time
+        }
+      }
+    ]
+  }
+
+Key design decisions:
+  - Duplicates ALLOWED (some positions worth drilling extra). Warning
+    dialog shows per-value breakdown before adding a duplicate.
+  - Position identity is SEMANTIC (board+turn+castling+en-passant),
+    NOT move_history. See value_dataset._canonical_position_key.
+  - Session grouping enables per-session export/rollback (via --session
+    flag on the CLI).
+  - Move history is preserved in the position dict — on export we replay
+    it to reconstruct the C++ Game with correct history-planes,
+    castling rights (via has_moved), and en-passant.
+  - Tags are metadata ONLY — never seen by training. Extensible: append
+    to VALUE_TAGS in value_dataset.py (currently: forced_win, material_adv).
+
+━━ UI workflow in the eval tool ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Toggle "Value Dataset: OFF" → "Value Dataset: ON | N total | K this session"
+     Bottom row expands to show save buttons + tag chips.
+  2. Navigate to a position (Game Setup mode — plays a game to reach it).
+  3. Click one of: [White wins +1] [Draw 0] [Black wins -1]
+     - Value = White's perspective always. NO auto-flip.
+     - Optional: click tag chips first ([forced_win] [material_adv]).
+       Tags persist across saves until toggled off.
+  4. If position already in dataset, warning dialog shows breakdown
+     and asks confirm.
+  5. Indicator under board shows "In dataset: 2x +1, 1x -1 [tag_name]"
+     for the current position (updated live).
+
+━━ Export to cluster-compatible npz ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  python tools/build_value_drill_npz.py                       # all entries
+  python tools/build_value_drill_npz.py --dry-run             # counts only
+  python tools/build_value_drill_npz.py --tags forced_win     # filter by tag
+  python tools/build_value_drill_npz.py --session <ID>        # single session
+  python tools/build_value_drill_npz.py -o path/to/file.npz   # custom output
+
+Default output: dataset/iter_9999_valdrill.npz. Naming rationale:
+  - "iter_9999_valdrill.npz" matches the buffer regex
+    ^iter_(\d+)(?:_([A-Za-z0-9]+))?\.npz$, so the loader picks it up.
+  - Iter 9999 is astronomically above the K-buffer eviction cutoff,
+    so it becomes PERSISTENT — never gets deleted by rolling cleanup.
+  - "_valdrill" tag surfaces in the loader's per-source breakdown log
+    so its presence is visible in training_history.
+
+━━ Upload to cluster ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  scp -i C:\Users\henry\.ssh\id_ed25519 \
+    "c:/Users/henry/Desktop/Extinction Chess RL/dataset/iter_9999_valdrill.npz" \
+    h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/replay_buffer/
+
+Buffer picks up the new file on the next iter's load. No cluster-side
+code change needed — the replay buffer loader already reads any file
+matching the iter_ regex.
+
+To REMOVE the drilled data: delete the .npz file from the cluster's
+replay_buffer/ directory. Deletion takes effect on the next iter's load.
+
+━━ Files touched (all local; SCP to cluster only for the .npz) ━━━━━━━
+
+  tools/positional_eval/value_dataset.py    — storage layer + session mgmt
+  tools/positional_eval/controls_widget.py  — toggle + save/tag buttons
+  tools/positional_eval/__main__.py         — handlers + warning dialog
+                                              + position-match indicator
+  tools/build_value_drill_npz.py            — CLI export
+  .gitignore                                — dataset/ excluded
+
+
+== HELPER TIMEOUT FIX (Aug 24-26 2026) ==
+
+┌─ STATUS ────────────────────────────────────────────────────────────────┐
+│ Effective from job 598539 onwards (iter 995+).                          │
+│ Iter 996 first successful helper consumption since Jul 14 (43 days).   │
+│ Commit: 679cb7d + sed edit on cluster's helper.sh.                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ Symptom ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+After the Aug 22-24 cluster recovery (delta-slurm1 + trpro-slurm1 both
+back), helpers began scheduling successfully on trpro-slurm1 but every
+helper job hit SLURM's TIMEOUT state at exactly 2h45m. Every iter's
+"[helper] missing file" log line for iters 985-988 (job 588880) and
+989-994 (job 596952).
+
+━━ Root cause ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Two compounding issues:
+  1. run_helper.py never got the use_tree_reuse=True flag when we added
+     it to run_training.py on Aug 3. Helpers were running with
+     tree_reuse=off — ~1.2x slower than main.
+  2. trpro-slurm1 was running ~1.8x slower per batch than delta-slurm1
+     (515us vs 916us in helper_595207.log timing lines). Cause unknown —
+     possibly post-outage node contention or CPU pressure. Investigating
+     is low priority since the fix worked.
+Combined: 200 games required ~3h, didn't fit in the 2h45m SLURM limit.
+
+━━ Fix ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Two changes:
+  1. src/run_helper.py commit 679cb7d: batched_self_play(..., use_tree_reuse=True)
+  2. Cluster-side sed on ~/extinction-chess/helper.sh:
+       sed -i 's/^#SBATCH --time=02:45:00/#SBATCH --time=04:00:00/' \
+         ~/extinction-chess/helper.sh
+
+Effective on the NEXT auto-resubmit after each change lands (Python
+cache in main + sbatch queue submission timing).
+
+━━ Verification ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Head of the first helper log after the fix should show:
+  [SelfPlayManager] ... tree_reuse=ON     ← was 'off' before
+And the corresponding main log line for that iter:
+  [helper] consumed helper_vXXX_id0.npz (200 games, ~7300 positions)
+    (was: "missing file")
+
+━━ If helpers time out AGAIN in the future ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Options in priority order:
+  1. Bump helper.sh wall time (already at 4h → try 5h or 6h).
+  2. Reduce games in helper.sh's run_helper.py call from 200 → 100.
+     Halves per-helper cost, doubles number of helpers per iter to
+     maintain total game count.
+  3. If it's persistently trpro-slurm1's per-batch slowness that's the
+     problem, redirect helpers to trpro-slurm2 by changing
+     helper_primary_node in run_training.py.
 
 
 == GPU NOTES ==
 
-delta-slurm1  (2× RTX 2080 Ti) — main training home (fast per-core CPUs)
-trpro-slurm1  (4× RTX 3090)    — DRAINED since Jul 14 (SlurmdSpoolDir issue). Node
-                                 is fully idle (CPULoad=0) but drain flag not
-                                 lifted. Admin only needs to run:
-                                   scontrol update NodeName=trpro-slurm1 State=RESUME
+Cluster history:
+  Jul 14 2026: trpro-slurm1 drained (SpoolDir full). Down 41 days.
+  Aug 9 2026:  delta-slurm1 drained ("Kill task failed"). Down 15 days.
+  Aug 22-24:   Both fixed by WATcloud admins during finals-end window.
+  Aug 24+:     Both back in service. Helpers began scheduling on
+               trpro-slurm1 (but timed out — see HELPER TIMEOUT FIX).
+
+Current state (as of Aug 26 2026):
+delta-slurm1  (2× RTX 2080 Ti) — main training home. Back up.
+trpro-slurm1  (4× RTX 3090)    — Back up. Helper target. Runs ~1.8x
+                                 slower per batch than delta-slurm1
+                                 (post-recovery quirk; helpers still fit
+                                 in the 4h wall time with tree_reuse=ON).
 trpro-slurm2  (1× RTX 4090)    — PREFERRED for tests + auto-benchmark node.
-                                 Also helper primary target.
 tr-slurm2     (1× GTX 1080)    — too slow to be useful for helpers.
 wato2-slurm1  (1× RTX 2080 Ti) — drain*
 thor-slurm1                    — drain*
+
+Reference for future outages: WATcloud team runs on limited capacity
+during finals (Discord admin msg 2026-08-02). Extended outages ARE
+possible. Contingency was to retarget training via train.sh nodelist
+edit; didn't end up needing it Aug 9-24 because delta-slurm1 came back
+naturally.
 
 
 == MANUAL BENCHMARK LAUNCH ==
@@ -719,12 +969,27 @@ cluster for at least 10 iters without regression.
 
 == EXPLORATION BUMP (dirichlet_alpha + noise_weight) ==
 
-┌─ DEPLOYMENT STATUS (updated Aug 8 2026) ────────────────────────────────┐
-│ Status:  ACTIVE from job 588242's auto-resubmit onwards                 │
-│          (job 588242 iters 971+ still on OLD values — Python cached)    │
+┌─ DEPLOYMENT STATUS (updated Aug 26 2026) ───────────────────────────────┐
+│ Status:  VALIDATED. Active from iter 977 onwards.                       │
 │ Values:  dirichlet_alpha=1.0 (was 0.3)                                  │
 │          noise_weight=0.5 (was 0.25)                                    │
 │ Commit:  3e19418 on history-planes                                      │
+│                                                                         │
+│ Verdict progression:                                                    │
+│   iter 977-988: drilling loss +35% (adaptation shock — expected,        │
+│                 same as reuse-era 940 pattern)                          │
+│   iter 990 benchmark: MIXED — vs iter 100 = 88.8% NEW PEAK, recent      │
+│                 H2H wins, BUT tactical @20 dropped 25pts (70→45%)       │
+│                 and tough-position count doubled (5→10).                │
+│                 Local tool test at iter 990: B and K promotions get     │
+│                 visits (were 0 at iter 980) — mechanism confirmed.      │
+│   iter 1000 benchmark: FULL RECOVERY. Tactical @20 rebounded 45→70%.    │
+│                 Tough-position count 10→4. vs iter 100 = 88.5% (peak).  │
+│                 Distant H2H up vs 850/880. Helper data returned         │
+│                 (Aug 26 fix) — 4/5 of iter 1000's buffer had helpers,   │
+│                 likely accelerated recovery.                            │
+│   DECISION: KEEP THE BUMP. Original rollback criteria (tactical @20    │
+│             <60% AND tough-count growing) both reversed.                │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─ WHY ───────────────────────────────────────────────────────────────────┐
