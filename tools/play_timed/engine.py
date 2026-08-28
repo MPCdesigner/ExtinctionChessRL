@@ -159,6 +159,28 @@ class Engine:
 
     # ── Reading current result (thread-safe) ───────────────────────────
 
+    def get_status_snapshot(self) -> Dict[str, Any]:
+        """Cheap read of the engine's live state — for UI display.
+
+        Returns: {sim_count, top_move_visits_str, state}.
+        `state` is what the worker thread is currently doing:
+          "SEARCHING" — MCTS chunks running against a persistent root
+          "IDLE"     — waiting for a start_from() request
+        (This is a lock-guarded read of the worker's internal state field;
+        safe to call every frame from main.)
+        """
+        with self._result_lock:
+            sim_count = self._latest_root_sim_count
+            top_visits = None
+            if self._latest_visits:
+                _, top_visits = max(self._latest_visits, key=lambda x: x[1])
+        state = self._w_state
+        return {
+            "sim_count": sim_count,
+            "top_visits": top_visits,
+            "state": state,
+        }
+
     def get_current_result(self) -> Optional[Dict[str, Any]]:
         """Snapshot of the current root's search state. Returns None if
         the engine is IDLE (nothing to report yet). Otherwise:

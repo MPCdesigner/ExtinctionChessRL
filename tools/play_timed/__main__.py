@@ -438,6 +438,15 @@ class TimedMatchApp:
             ticking=self.state.is_model_turn(),
         )
 
+        # Engine status line — cheap read, updates every frame. Live sim
+        # count tells us if the ponder tree is actually accumulating.
+        eng = self.engine.get_status_snapshot()
+        eng_str = (f"engine: {eng['state']} | root sims: {eng['sim_count']}"
+                   + (f"  (top move: {eng['top_visits']})"
+                      if eng['top_visits'] else ""))
+        eng_surf = self.font_row.render(eng_str, True, (60, 60, 90))
+        self.screen.blit(eng_surf, (SIDE_X + 12, SIDE_Y + 12 + 90))
+
         # Your clock (bottom-ish above the New Game button).
         your_y = panel.bottom - 60 - 90
         self._draw_clock_block(
