@@ -488,7 +488,7 @@ White/Black, set per-side base minutes + increment seconds. Four presets
 apply to BOTH sides at once: 1+0, 3+2, 5+3, 10+5. For odds, apply preset
 then hand-edit one side.
 
-━━ PHASE STATUS (Aug 27 2026) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ PHASE STATUS (Aug 28 2026) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Phase 1  SHIPPED (commit 64315f1):
     Board + click-click move input + legal-move highlighting
@@ -498,17 +498,56 @@ then hand-edit one side.
     Game-end banner (extinction / flag / draw)
     "New Game" button returns to startup dialog with prev settings
 
-  Phase 2 (planned): pondering
-    Engine thread continues MCTS during user's turn. When user moves,
-    engine descends into that move's subtree (via alphazero.descend_root
-    + prev_root reuse mechanism shipped Aug 3) and keeps searching. On
-    model's turn, engine has already done meaningful work — plays a
-    much stronger move than sim-budget-alone would suggest.
+  Phase 2  SHIPPED (commit feced3d + fix fab4ba1):
+    Engine worker thread runs continuous ponder loop. Between chunks
+    of PONDER_CHUNK_SIMS=30, it drains a request queue (descend, stop,
+    start-from). On user's move, main calls engine.descend(user_move)
+    which posts a descend request; worker re-enters mcts_search with
+    prev_root=<the child that matches the played move>, so sims keep
+    accumulating on the new root.
+    ⚠ fab4ba1 fix — CRITICAL: alphazero.descend_root uses
+      child.move == played_move. Move class has NO __eq__, so this
+      falls back to identity comparison. UI-driven moves are fresh
+      objects → identity mismatch → descend always returned None →
+      tree reset every ply. Replaced with _descend_root_structural
+      inside engine.py that matches on (from.rank, from.file, to.rank,
+      to.file, promotion). Do NOT re-import alphazero.descend_root
+      here — the structural version is required for UI-sourced moves.
+    Status line shows "root sims: N  (top move: M)" during ponder.
+    "sims accumulated" shown on model moves includes ponder sims +
+    on-clock sims combined (it's the total visit count of the root
+    at the moment the move was chosen).
 
-  Phase 3 (planned): post-game review
-    All hidden information (per-move search snapshots stored in
-    MoveRecord.search_snapshot during play) becomes visible. Click
-    through moves to see model's top choices + value at each position.
+  Phase 3  SHIPPED (commit 2f8586d, ponder-capture fix 926a00c):
+    Auto-enter review mode on game end. Review UI:
+      - Prev/Next buttons + ←/→ keys + Home/End jump to ends
+      - Clickable move-history rows to jump to any ply
+      - Reconstructed board state at each position via
+        MatchState.reconstruct_at(ply_index) — O(ply) replay from
+        the initial position (few ms for extinction-chess-length games)
+      - Reconstructed clocks via MatchState.clocks_at(ply_index)
+      - Snapshot block: sim_count, root_value flipped to White's
+        perspective, top-8 moves with visits + probs
+
+    926a00c — CRITICAL: originally we only stored search_snapshot for
+    model moves. But the engine IS pondering during the user's turn,
+    so a snapshot AT THE MOMENT the user played represents "what the
+    engine thought about your options." Both _attempt_user_move and
+    _handle_promotion_click now grab engine.get_current_result() and
+    pass its search_snapshot into state.apply_move BEFORE calling
+    engine.descend. Review panel labels them "engine's ponder: N sims"
+    (user moves) vs "engine's own search: N sims" (model moves).
+
+    Board orientation (commit 964f582): BoardWidget gained a
+    flipped=False kwarg. TimedMatchApp passes
+    flipped=(user_color == Color.BLACK) so your pieces are always on
+    the near side. Highlights, clicks, and labels all follow the flip.
+    Default False keeps positional_eval unaffected.
+
+    Value perspective in review: root_value is from the mover's POV.
+    Review panel flips sign when rec.side is Black so displayed value
+    is always in White's perspective (matches positional_eval convention:
+    positive = White winning). Applied uniformly to user & model moves.
 
 ━━ FILES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -565,15 +604,16 @@ Imports from existing code (read-only reuse):
 
 ━━ ROLLBACK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Tool is fully self-contained under tools/play_timed/. Deleting that
-directory removes it with zero side effects. Or:
+Most of the tool is self-contained under tools/play_timed/:
 
   git rm -r tools/play_timed/
   git commit -m "Remove play_timed tool"
 
-No existing code was modified. If Phase 1's import of BoardWidget from
-positional_eval breaks something, that's a bug in Phase 1 — positional_eval
-was not touched.
+⚠ Phase 3 modified ONE line of existing code: BoardWidget gained a
+`flipped: bool = False` kwarg + branches in square_rect / pixel_to_square
+/ label loop (commit 964f582). Default False, so positional_eval is
+unaffected — but if you fully back out play_timed, revert 964f582 too
+to keep BoardWidget minimal.
 
 
 == HELPER TIMEOUT FIX (Aug 24-26 2026) ==
