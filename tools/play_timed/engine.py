@@ -1,22 +1,28 @@
-"""Engine: wraps MCTS in a worker thread so pygame stays responsive.
+"""Engine: MCTS runner with continuous pondering (Phase 2).
 
-Phase 1 usage:
-  eng = Engine(model_path, device="cpu")
-  eng.start_move_search(game, sim_budget=200)
-  # ... every pygame frame:
-  if eng.is_done():
-      result = eng.take_result()
-      # result: {move, search_snapshot}
+Key idea: the engine maintains a persistent MCTS root that grows in a
+background thread. When either side plays a move, the engine descends
+into that move's subtree via `descend_root` (from alphazero.py, shipped
+with tree reuse Aug 3). No search work is thrown away between turns.
 
-Phase 2 will add ponder_start / ponder_stop / promote_and_continue methods
-that leverage mcts_search's prev_root / return_root parameters.
+State machine (managed by the worker thread):
+    IDLE       → start_from(game)   → SEARCHING
+    SEARCHING  → descend(move)      → SEARCHING (new root = subtree)
+    SEARCHING  → stop()             → IDLE
 
-Design notes:
-  - We measure sims/sec ONCE at startup so the main loop can convert a
-    time budget (seconds) into a sim count without re-measuring per move.
-  - The worker thread never blocks pygame — main loop polls is_done().
-  - Search runs with noise disabled and tactical_shortcuts enabled
-    (deterministic, will instantly play a mate-in-1).
+Main loop interaction:
+    engine.start_from(game)              # at game start / new game
+    # ... during user's turn: engine keeps pondering ...
+    engine.descend(user_move)            # user makes move
+    # ... engine keeps pondering from new root ...
+    time.sleep(model_time_budget_sec)    # let engine work during model's turn
+    move, snap = engine.get_current_result()   # main takes the current best
+    engine.descend(model_move)           # model plays; keep pondering
+    # ... etc ...
+
+Warmup: measures sims/sec on the STARTING position via a bounded
+mcts_search before pondering begins. Phase 1 tests showed ~10 sims/sec
+on CPU for this model, so time budgets are mapped via that rate.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", "src"))
@@ -34,170 +40,288 @@ if _SRC_DIR not in sys.path:
 
 import torch  # noqa: E402
 
-from extinction_chess import ExtinctionChess  # noqa: E402
+from extinction_chess import ExtinctionChess, Move  # noqa: E402
 from alphazero import (  # noqa: E402
-    AlphaZeroNet, AlphaZeroEvaluator, mcts_search, move_to_index,
+    AlphaZeroNet, AlphaZeroEvaluator, mcts_search, descend_root,
 )
 
 
-# Placeholder — the user reported ~10 sims/sec measured on their laptop.
-# We use this only until we've done our own warmup measurement.
 DEFAULT_SIMS_PER_SECOND = 10.0
+PONDER_CHUNK_SIMS = 30   # how many extra sims to target per mcts_search chunk
 
 
 class Engine:
-    """MCTS runner + measured throughput. One Engine per model per session."""
+    """Persistent MCTS worker with a growing root tree.
+
+    Thread safety:
+        - The worker thread OWNS `self._root` and `self._root_game`.
+        - The main thread communicates via a lock-guarded request queue.
+        - `get_current_result()` reads a lock-guarded snapshot; safe to call
+          from main at any time.
+    """
 
     def __init__(self, model_path: str, device: str = "cpu"):
         self.model_path = model_path
         self.device = torch.device(device)
 
-        # Load the model.
         self.model, meta = AlphaZeroNet.load_checkpoint(model_path, migrate=True)
         self.model = self.model.to(self.device).eval()
         self.iteration = int(meta.get("iteration", -1))
         self.evaluator = AlphaZeroEvaluator(self.model, device=self.device)
 
-        # Measured at first use; None until then.
         self.sims_per_second: Optional[float] = None
 
-        # Worker thread state.
-        self._thread: Optional[threading.Thread] = None
-        self._result: Optional[Dict[str, Any]] = None
-        self._lock = threading.Lock()
+        # ── Worker thread state ────────────────────────────────────────
+        # Held only while modifying request state.
+        self._req_lock = threading.Lock()
+        # Pending requests: list of ("start", game) or ("descend", move)
+        # or ("stop",). Consumed by the worker between MCTS chunks.
+        self._pending_requests: List[Tuple[str, Any]] = []
+        # Set to signal worker to exit entirely (on tool shutdown).
+        self._exit_flag = threading.Event()
+        # Set to signal the CURRENT mcts_search chunk to stop early
+        # (used when a descend request arrives mid-chunk).
+        self._interrupt_chunk = threading.Event()
+
+        # Held only while modifying result state.
+        self._result_lock = threading.Lock()
+        # Latest visible-to-main snapshot of the current root.
+        # Only meaningful when SEARCHING (not IDLE).
+        self._latest_visits: List[Tuple[Move, int]] = []
+        self._latest_root_value: float = 0.0
+        self._latest_root_sim_count: int = 0
+
+        # Worker's own state (only worker thread reads/writes these).
+        self._w_state: str = "IDLE"
+        self._w_game: Optional[ExtinctionChess] = None
+        self._w_root = None  # MCTSNode from alphazero — Python-side type
+
+        # Start the worker thread.
+        self._thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self._thread.start()
 
     # ── Sim/time conversion ────────────────────────────────────────────
 
     def sims_for_time_budget(self, seconds: float) -> int:
-        """Convert a time budget to a sim budget. Rounds DOWN and enforces
-        a minimum of 1 so we never call MCTS with 0 sims."""
         rate = self.sims_per_second or DEFAULT_SIMS_PER_SECOND
         return max(1, int(seconds * rate))
 
-    def warmup(self, game: ExtinctionChess, sample_sims: int = 50) -> float:
-        """Measure sims/sec on a real position. Blocks; do this at match
-        start (before the clock is running). Returns the measured rate.
-
-        50 sims is small enough to be quick but large enough for a stable
-        measurement. If the position is terminal / has no legal moves,
-        we fall back to the default and log a note.
-        """
+    def warmup(self, game: ExtinctionChess, sample_sims: int = 30) -> float:
+        """Blocking measurement of sims/sec on a live position. Call once
+        before start_from() so the clock isn't running yet."""
         if game.game_over or not game.get_legal_moves():
             self.sims_per_second = DEFAULT_SIMS_PER_SECOND
             return self.sims_per_second
 
+        game_copy = self._snapshot_game(game)
         t0 = time.monotonic()
-        move_visits, _root_value = mcts_search(
-            game, self.evaluator,
+        mcts_search(
+            game_copy, self.evaluator,
             num_simulations=sample_sims,
             dirichlet_alpha=0.0,
             noise_weight=0.0,
-            tactical_shortcuts=False,     # measure raw rate, not a shortcut hit
+            tactical_shortcuts=False,
         )
         elapsed = max(1e-6, time.monotonic() - t0)
         self.sims_per_second = sample_sims / elapsed
         return self.sims_per_second
 
-    # ── Worker thread lifecycle ────────────────────────────────────────
+    # ── Requests from main (thread-safe) ───────────────────────────────
 
-    def start_move_search(self, game: ExtinctionChess, sim_budget: int) -> None:
-        """Kick off MCTS for the model's move in a background thread.
+    def start_from(self, game: ExtinctionChess) -> None:
+        """Begin pondering from `game`. Discards any prior root."""
+        with self._req_lock:
+            self._pending_requests.append(("start", self._snapshot_game(game)))
+        self._interrupt_chunk.set()
 
-        The main loop should poll is_done() and take_result() when true.
-        Only ONE search at a time; calling again while one is pending
-        raises RuntimeError.
+    def descend(self, played_move: Move) -> None:
+        """A move was played — descend the root and keep pondering.
+
+        If the current root doesn't have a subtree for this move (rare —
+        e.g., we're mid-warmup or the tree hasn't expanded far enough),
+        the worker falls back to a fresh search from the new position.
         """
-        if self._thread is not None and self._thread.is_alive():
-            raise RuntimeError("Engine already has a search in flight")
+        with self._req_lock:
+            self._pending_requests.append(("descend", played_move))
+        self._interrupt_chunk.set()
 
-        with self._lock:
-            self._result = None
+    def stop(self) -> None:
+        """Stop searching. Engine transitions to IDLE."""
+        with self._req_lock:
+            self._pending_requests.append(("stop", None))
+        self._interrupt_chunk.set()
 
-        # Snapshot the game because ExtinctionChess isn't safe across threads
-        # while being mutated. Deep copy via reconstruction from board state.
-        game_snapshot = self._snapshot_game(game)
+    def shutdown(self) -> None:
+        """Terminate the worker thread (on tool exit)."""
+        self._exit_flag.set()
+        self._interrupt_chunk.set()
+        self._thread.join(timeout=2.0)
 
-        def _worker():
-            t0 = time.monotonic()
-            move_visits, root_value = mcts_search(
-                game_snapshot, self.evaluator,
-                num_simulations=sim_budget,
-                c_puct=2.5,
-                dirichlet_alpha=0.0,     # deterministic play
-                noise_weight=0.0,
-                tactical_shortcuts=True, # instantly play mate-in-1s
-            )
-            elapsed = time.monotonic() - t0
+    # ── Reading current result (thread-safe) ───────────────────────────
 
-            if not move_visits:
-                # No legal moves — should be caught before start_move_search
-                # is called, but handle defensively.
-                with self._lock:
-                    self._result = {"move": None, "elapsed": elapsed,
-                                    "search_snapshot": None}
-                return
-
-            # Pick the highest-visit move (argmax — deterministic play).
-            best_move, best_visits = max(move_visits, key=lambda x: x[1])
-            total_visits = sum(v for _, v in move_visits)
-
-            # Build a compact snapshot for Phase 3 review.
-            # Sort by visits desc so top moves are first.
-            sorted_moves = sorted(move_visits, key=lambda x: x[1], reverse=True)
-            snapshot = {
-                "sim_count": total_visits,
-                "root_value": float(root_value),
-                "top_moves": [
-                    {
-                        "from": [m.from_pos.rank, m.from_pos.file],
-                        "to":   [m.to_pos.rank, m.to_pos.file],
-                        "promotion": m.promotion.value if m.promotion else None,
-                        "visits": v,
-                        "prob": v / total_visits if total_visits else 0.0,
-                    }
-                    for m, v in sorted_moves
-                ],
-                "elapsed_seconds": elapsed,
+    def get_current_result(self) -> Optional[Dict[str, Any]]:
+        """Snapshot of the current root's search state. Returns None if
+        the engine is IDLE (nothing to report yet). Otherwise:
+            {
+              "move":         Move,           # highest-visit child of root
+              "search_snapshot": {
+                "sim_count":  int,            # visits at root
+                "root_value": float,          # from-current-player perspective
+                "top_moves":  [{from, to, promotion, visits, prob}, ...],
+                "elapsed_seconds": 0.0,       # unused in ponder mode
+              },
             }
+        Returns None if no legal move exists at the current root (game over).
+        """
+        with self._result_lock:
+            visits = list(self._latest_visits)
+            root_value = self._latest_root_value
+            total = self._latest_root_sim_count
 
-            with self._lock:
-                self._result = {
-                    "move": best_move,
-                    "elapsed": elapsed,
-                    "search_snapshot": snapshot,
+        if not visits:
+            return None
+
+        best_move, _best_visits = max(visits, key=lambda x: x[1])
+        sorted_moves = sorted(visits, key=lambda x: x[1], reverse=True)
+        snap = {
+            "sim_count": total,
+            "root_value": float(root_value),
+            "top_moves": [
+                {
+                    "from": [m.from_pos.rank, m.from_pos.file],
+                    "to":   [m.to_pos.rank, m.to_pos.file],
+                    "promotion": m.promotion.value if m.promotion else None,
+                    "visits": v,
+                    "prob": v / max(1, total),
                 }
+                for m, v in sorted_moves
+            ],
+            "elapsed_seconds": 0.0,
+        }
+        return {"move": best_move, "search_snapshot": snap}
 
-        self._thread = threading.Thread(target=_worker, daemon=True)
-        self._thread.start()
+    # ── Worker thread body ─────────────────────────────────────────────
 
-    def is_done(self) -> bool:
-        with self._lock:
-            return self._result is not None
+    def _worker_loop(self) -> None:
+        """Continuously run MCTS chunks against the current root, servicing
+        requests between chunks. All root/game mutations happen here."""
+        while not self._exit_flag.is_set():
+            # Drain any pending requests.
+            self._process_pending_requests()
+            if self._exit_flag.is_set():
+                break
 
-    def take_result(self) -> Optional[Dict[str, Any]]:
-        """Return the result and clear it. Call after is_done() → True."""
-        with self._lock:
-            r = self._result
-            self._result = None
-        self._thread = None
-        return r
+            if self._w_state != "SEARCHING" or self._w_game is None:
+                time.sleep(0.03)  # idle sleep
+                continue
 
-    # ── Utilities ──────────────────────────────────────────────────────
+            # If game is over at the current position, nothing to search.
+            if self._w_game.game_over or not self._w_game.get_legal_moves():
+                self._w_state = "IDLE"
+                self._w_root = None
+                self._w_game = None
+                self._publish_result([], 0.0, 0)
+                continue
+
+            # Do one chunk of MCTS.
+            current_sims = (self._w_root.visit_count
+                            if self._w_root is not None else 0)
+            target = current_sims + PONDER_CHUNK_SIMS
+
+            self._interrupt_chunk.clear()
+            try:
+                move_visits, root_value, new_root = mcts_search(
+                    self._w_game, self.evaluator,
+                    num_simulations=target,
+                    c_puct=2.5,
+                    dirichlet_alpha=0.0,
+                    noise_weight=0.0,
+                    tactical_shortcuts=True,
+                    prev_root=self._w_root,
+                    return_root=True,
+                    should_stop=self._interrupt_chunk.is_set,
+                )
+            except Exception as e:
+                # Log and drop back to IDLE. Main will notice via
+                # get_current_result() returning None (empty visits).
+                print(f"[engine] mcts_search raised: "
+                      f"{type(e).__name__}: {e}", flush=True)
+                self._w_state = "IDLE"
+                self._w_root = None
+                self._w_game = None
+                self._publish_result([], 0.0, 0)
+                continue
+
+            self._w_root = new_root
+            self._publish_result(move_visits, root_value, new_root.visit_count)
+
+    def _process_pending_requests(self) -> None:
+        """Consume all pending requests. Called between chunks."""
+        with self._req_lock:
+            reqs = self._pending_requests
+            self._pending_requests = []
+
+        for kind, payload in reqs:
+            if kind == "start":
+                self._w_game = payload         # already-copied game
+                self._w_root = None            # fresh root
+                self._w_state = "SEARCHING"
+                self._publish_result([], 0.0, 0)   # reset visible state
+            elif kind == "descend":
+                move = payload
+                if self._w_game is None or self._w_root is None:
+                    # Nothing to descend into — apply move to game and search fresh.
+                    if self._w_game is not None:
+                        applied = self._w_game.make_move(move)
+                        if not applied:
+                            # Illegal from-engine-perspective; nothing we can do.
+                            self._w_state = "IDLE"
+                            self._w_root = None
+                            self._w_game = None
+                            self._publish_result([], 0.0, 0)
+                    continue
+
+                # First apply the move to the game snapshot.
+                new_game_copy = self._snapshot_game(self._w_game)
+                applied = new_game_copy.make_move(move)
+                if not applied:
+                    print(f"[engine] descend: make_move failed for "
+                          f"{move}", flush=True)
+                    self._w_state = "IDLE"
+                    self._w_root = None
+                    self._w_game = None
+                    self._publish_result([], 0.0, 0)
+                    continue
+
+                # Then descend the tree to the corresponding subtree.
+                promoted = descend_root(self._w_root, [move])
+                self._w_game = new_game_copy
+                self._w_root = promoted   # may be None → fresh search next chunk
+                self._w_state = "SEARCHING"
+                # Reset visible state so main doesn't see stale visits.
+                self._publish_result([], 0.0, 0)
+            elif kind == "stop":
+                self._w_state = "IDLE"
+                self._w_root = None
+                self._w_game = None
+                self._publish_result([], 0.0, 0)
+
+    def _publish_result(self, move_visits, root_value: float,
+                        sim_count: int) -> None:
+        """Copy the latest snapshot to a lock-guarded field that main
+        threads can read via get_current_result()."""
+        with self._result_lock:
+            self._latest_visits = list(move_visits)
+            self._latest_root_value = float(root_value)
+            self._latest_root_sim_count = int(sim_count)
+
+    # ── Game copy (safe from cross-thread mutation) ────────────────────
 
     def _snapshot_game(self, game: ExtinctionChess) -> ExtinctionChess:
-        """Deep-copy the game via _copy_game (in alphazero.py). MCTS mutates
-        node.game internally; we don't want that touching the main-thread
-        game object."""
-        # ExtinctionChess deep copy in the C++ backend is a plain constructor
-        # copy — the Python fallback needs a bit more care. Easiest cross-
-        # backend: create fresh and replay move history if we tracked it,
-        # OR just rely on that our C++ Game copy works cleanly.
-        # For safety and portability we do a manual field copy.
         gc = ExtinctionChess()
         gc.board = game.board.copy()
         gc.current_player = game.current_player
         gc.game_over = game.game_over
-        # winner attribute exists on Python fallback; may or may not on C++.
         if hasattr(game, "winner"):
             gc.winner = game.winner
         return gc

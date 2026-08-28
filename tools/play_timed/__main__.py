@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import List, Optional, Tuple
 
 import pygame
@@ -160,10 +161,15 @@ class TimedMatchApp:
         self.new_game_button = pygame.Rect(0, 0, 0, 0)
         self.want_new_game = False
 
-        # Whether the engine has an in-flight search.
-        self._engine_running = False
+        # Phase 2 pondering state — when it's the model's turn, main computes
+        # a deadline (monotonic time) and lets the engine keep pondering
+        # until then. When deadline passes, main reads the current best move.
+        # None means "no deadline set yet" (either user's turn or we already
+        # played the model's move for this turn).
+        self._model_move_deadline: Optional[float] = None
 
-        # Kick off the match.
+        # Kick off the match: start pondering from the initial position.
+        self.engine.start_from(self.state.game)
         self.state.start()
 
     # ── Main loop ────────────────────────────────────────────────────────
@@ -186,16 +192,30 @@ class TimedMatchApp:
             self.state.check_flag()
 
             if self.want_new_game:
+                self.engine.stop()
                 return True
 
-            # If it's the model's turn and no search is in flight, launch.
-            if (self.state.is_model_turn() and not self._engine_running
-                    and self.state.is_ongoing()):
-                self._launch_model_search()
+            # Model-turn handling (Phase 2 pondering flow):
+            # 1. When it becomes model's turn: set a deadline based on
+            #    time budget. Engine has already been pondering during
+            #    user's turn.
+            # 2. Every frame after that: if deadline has passed, take
+            #    the current best move from engine and play it.
+            if (self.state.is_ongoing() and self.state.is_model_turn()):
+                if self._model_move_deadline is None:
+                    budget_sec = self.state.model_thinking_budget_seconds()
+                    self._model_move_deadline = time.monotonic() + budget_sec
+                    self.status_message = (
+                        f"Model thinking (budget ≈ {budget_sec:.1f}s, "
+                        f"pondering during your turn adds to this)…")
+                elif time.monotonic() >= self._model_move_deadline:
+                    self._apply_model_move()
+                    self._model_move_deadline = None
 
-            # If a model search finished, apply the result.
-            if self._engine_running and self.engine.is_done():
-                self._apply_model_move()
+            # If we transitioned to game-over during the model's think,
+            # clear the deadline so we don't retry.
+            if not self.state.is_ongoing():
+                self._model_move_deadline = None
 
             self._draw()
             pygame.display.flip()
@@ -276,6 +296,9 @@ class TimedMatchApp:
             self.selected_square = None
             self.legal_targets = set()
             self.status_message = f"You played {_move_str(move)}."
+            # Tell the engine to descend into your move so it can keep
+            # pondering from the new position.
+            self.engine.descend(move)
 
     def _handle_promotion_click(self, pos: Tuple[int, int]) -> None:
         """Promotion dialog is drawn in _draw; layout there mirrors this."""
@@ -301,6 +324,7 @@ class TimedMatchApp:
                         and m.promotion == promo_type):
                     self.state.apply_move(m)
                     self.status_message = f"You played {_move_str(m)}."
+                    self.engine.descend(m)
                     break
             self.promotion_pending = None
             self.selected_square = None
@@ -320,27 +344,32 @@ class TimedMatchApp:
             rects[label] = pygame.Rect(start_x + i * (btn_w + gap), y, btn_w, btn_h)
         return rects
 
-    # ── Model move flow ───────────────────────────────────────────────────
-
-    def _launch_model_search(self) -> None:
-        budget_sec = self.state.model_thinking_budget_seconds()
-        sim_budget = self.engine.sims_for_time_budget(budget_sec)
-        self.engine.start_move_search(self.state.game, sim_budget)
-        self._engine_running = True
-        self.status_message = (f"Model thinking… (budget ≈ {budget_sec:.1f}s, "
-                               f"{sim_budget} sims)")
+    # ── Model move flow (Phase 2: ponder-aware) ──────────────────────────
 
     def _apply_model_move(self) -> None:
-        result = self.engine.take_result()
-        self._engine_running = False
+        """Pull the model's current best move from the ponder tree and play it."""
+        result = self.engine.get_current_result()
         if result is None or result.get("move") is None:
-            self.status_message = "Model produced no move — something's off."
-            return
+            # Engine had no result yet — rare, but can happen if the position
+            # has extremely few legal moves + the ponder chunk hasn't run.
+            # Give it a tiny bit more time.
+            time.sleep(0.1)
+            result = self.engine.get_current_result()
+            if result is None or result.get("move") is None:
+                self.status_message = ("Model has no result yet — waiting…")
+                self._model_move_deadline = time.monotonic() + 1.0
+                return
         move = result["move"]
         snap = result.get("search_snapshot")
         applied = self.state.apply_move(move, search_snapshot=snap)
         if applied:
-            self.status_message = f"Model played {_move_str(move)}."
+            sim_count = snap.get("sim_count", 0) if snap else 0
+            self.status_message = (
+                f"Model played {_move_str(move)} "
+                f"({sim_count} sims accumulated).")
+            # Engine descends into its own move so it can start pondering
+            # from the new position (waiting for the user's move).
+            self.engine.descend(move)
 
     # ── Drawing ───────────────────────────────────────────────────────────
 
@@ -522,7 +551,11 @@ def main() -> None:
         }
 
         app = TimedMatchApp(settings)
-        wants_restart = app.run()
+        try:
+            wants_restart = app.run()
+        finally:
+            # Clean up the engine's worker thread regardless of exit reason.
+            app.engine.shutdown()
         if not wants_restart:
             pygame.quit()
             return
