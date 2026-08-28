@@ -268,6 +268,43 @@ class MatchState:
                 return True
         return False
 
+    # ── Review-mode helpers (Phase 3) ───────────────────────────────────
+
+    def reconstruct_at(self, ply_index: int) -> ExtinctionChess:
+        """Rebuild the board state AFTER move index `ply_index` was played.
+
+        ply_index=-1 means "before any moves" (initial position).
+        ply_index=0 means "after move 0 (the first move) was played".
+        ply_index >= len(moves) is clamped to the last move.
+
+        Runs in O(ply_index) since we replay moves from scratch. For
+        extinction chess games (~40 moves), this is a few milliseconds —
+        cheap enough to run on every review-navigation click.
+        """
+        g = ExtinctionChess()
+        stop_at = min(ply_index, len(self.moves) - 1)
+        for i in range(stop_at + 1):
+            g.make_move(self.moves[i].move)
+        return g
+
+    def clocks_at(self, ply_index: int) -> "tuple[float, float]":
+        """(user_clock, model_clock) as they were AFTER move ply_index.
+
+        Reconstructs by walking the move history. Only mover's clock is
+        modified per move (thinking_time deducted then increment added).
+        ply_index=-1 means "before any moves" — starting clocks.
+        """
+        user_t = self.user_tc.base_seconds
+        model_t = self.model_tc.base_seconds
+        stop_at = min(ply_index, len(self.moves) - 1)
+        for i in range(stop_at + 1):
+            rec = self.moves[i]
+            if rec.side == self.user_color:
+                user_t = rec.clock_after_seconds
+            else:
+                model_t = rec.clock_after_seconds
+        return user_t, model_t
+
     # ── Convenience for engine budget ───────────────────────────────────
 
     def model_thinking_budget_seconds(self) -> float:

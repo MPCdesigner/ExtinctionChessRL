@@ -168,6 +168,16 @@ class TimedMatchApp:
         # played the model's move for this turn).
         self._model_move_deadline: Optional[float] = None
 
+        # Phase 3 review state — None during play, int in [-1, len(moves)-1]
+        # during review (game over). -1 = initial position, N = after move N.
+        # Managed by _enter_review_mode / _navigate_review.
+        self._review_index: Optional[int] = None
+        self._review_game: Optional = None            # ExtinctionChess snapshot
+        # Rects for clickable review widgets (recomputed each draw).
+        self._review_prev_button = pygame.Rect(0, 0, 0, 0)
+        self._review_next_button = pygame.Rect(0, 0, 0, 0)
+        self._review_history_rects: List[Tuple[int, pygame.Rect]] = []
+
         # Kick off the match: start pondering from the initial position.
         self.engine.start_from(self.state.game)
         self.state.start()
@@ -188,12 +198,25 @@ class TimedMatchApp:
                     return False
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_click(event.pos)
+                if event.type == pygame.KEYDOWN and self._review_index is not None:
+                    if event.key == pygame.K_LEFT:
+                        self._navigate_review(-1)
+                    elif event.key == pygame.K_RIGHT:
+                        self._navigate_review(+1)
+                    elif event.key == pygame.K_HOME:
+                        self._set_review_index(-1)
+                    elif event.key == pygame.K_END:
+                        self._set_review_index(len(self.state.moves) - 1)
 
             self.state.check_flag()
 
             if self.want_new_game:
                 self.engine.stop()
                 return True
+
+            # If game just ended (from a move or a flag), auto-enter review.
+            if (not self.state.is_ongoing() and self._review_index is None):
+                self._enter_review_mode()
 
             # Model-turn handling (Phase 2 pondering flow):
             # 1. When it becomes model's turn: set a deadline based on
@@ -232,6 +255,21 @@ class TimedMatchApp:
         # Promotion overlay eats all other clicks while active
         if self.promotion_pending is not None:
             self._handle_promotion_click(pos)
+            return
+
+        # Review-mode clicks (navigation + click-to-jump on history)
+        if self._review_index is not None:
+            if self._review_prev_button.collidepoint(pos):
+                self._navigate_review(-1)
+                return
+            if self._review_next_button.collidepoint(pos):
+                self._navigate_review(+1)
+                return
+            for ply, rect in self._review_history_rects:
+                if rect.collidepoint(pos):
+                    self._set_review_index(ply)
+                    return
+            # Board is not interactive in review mode.
             return
 
         # Only accept board clicks when it's the user's turn
@@ -344,6 +382,38 @@ class TimedMatchApp:
             rects[label] = pygame.Rect(start_x + i * (btn_w + gap), y, btn_w, btn_h)
         return rects
 
+    # ── Review mode (Phase 3) ────────────────────────────────────────────
+
+    def _enter_review_mode(self) -> None:
+        """Called when the game ends. Positions the cursor at the final move
+        and populates the review board. Engine is left alone — it'll idle
+        naturally on the terminal position."""
+        self.engine.stop()
+        n = len(self.state.moves)
+        # Start at the final position so the reviewer sees the outcome.
+        # Cursor -1 means "before any moves" (initial position). If no moves
+        # were played (unlikely but possible: instant flag on move 1?) we
+        # still enter review at -1.
+        self._set_review_index(n - 1 if n > 0 else -1)
+        self.status_message = (
+            "Review mode: click any move (or use ← / → keys) to jump. "
+            "Model's search stats are revealed for each of its moves.")
+
+    def _set_review_index(self, idx: int) -> None:
+        idx = max(-1, min(len(self.state.moves) - 1, idx))
+        self._review_index = idx
+        # Reconstruct the position and cache it. Cheap for extinction chess
+        # (game lengths are ~40 moves).
+        self._review_game = self.state.reconstruct_at(idx)
+        # Clear per-position UI state so it doesn't leak from play mode.
+        self.selected_square = None
+        self.legal_targets = set()
+
+    def _navigate_review(self, delta: int) -> None:
+        if self._review_index is None:
+            return
+        self._set_review_index(self._review_index + delta)
+
     # ── Model move flow (Phase 2: ponder-aware) ──────────────────────────
 
     def _apply_model_move(self) -> None:
@@ -411,12 +481,25 @@ class TimedMatchApp:
                                     (BANNER_H - text.get_height()) // 2))
 
     def _draw_board(self) -> None:
-        ps = _MockPositionState(self.state.game)
-        last_from = last_to = None
-        if self.state.moves:
-            last = self.state.moves[-1]
-            last_from = last.move.from_pos
-            last_to = last.move.to_pos
+        # In review mode, show the reconstructed position at the current
+        # review index. Otherwise show the live game.
+        if self._review_index is not None and self._review_game is not None:
+            display_game = self._review_game
+            # Highlight the move THAT WAS PLAYED to reach this position
+            # (i.e., the move at index _review_index, if any).
+            if 0 <= self._review_index < len(self.state.moves):
+                rec = self.state.moves[self._review_index]
+                last_from, last_to = rec.move.from_pos, rec.move.to_pos
+            else:
+                last_from = last_to = None
+        else:
+            display_game = self.state.game
+            last_from = last_to = None
+            if self.state.moves:
+                last = self.state.moves[-1]
+                last_from, last_to = last.move.from_pos, last.move.to_pos
+
+        ps = _MockPositionState(display_game)
         self.board_widget.draw(
             self.screen, ps,
             selected=self.selected_square,
@@ -430,6 +513,22 @@ class TimedMatchApp:
         pygame.draw.rect(self.screen, (255, 255, 255), panel)
         pygame.draw.rect(self.screen, (200, 200, 210), panel, width=1)
 
+        # New Game button (bottom, always visible).
+        btn = pygame.Rect(SIDE_X + 12, panel.bottom - 46,
+                          panel.right - SIDE_X - 24, 34)
+        self.new_game_button = btn
+        pygame.draw.rect(self.screen, (240, 240, 250), btn)
+        pygame.draw.rect(self.screen, (100, 100, 130), btn, width=1)
+        label = self.font_label.render("New Game", True, (30, 30, 60))
+        self.screen.blit(label, label.get_rect(center=btn.center))
+
+        if self._review_index is not None:
+            self._draw_review_panel(panel)
+        else:
+            self._draw_play_panel(panel)
+
+    def _draw_play_panel(self, panel: pygame.Rect) -> None:
+        """Live-game side panel: model clock, engine status, history, your clock."""
         # Model clock (top). Highlight if it's model's turn OR if low.
         self._draw_clock_block(
             x=SIDE_X + 12, y=SIDE_Y + 12,
@@ -438,8 +537,7 @@ class TimedMatchApp:
             ticking=self.state.is_model_turn(),
         )
 
-        # Engine status line — cheap read, updates every frame. Live sim
-        # count tells us if the ponder tree is actually accumulating.
+        # Engine status line — cheap read, updates every frame.
         eng = self.engine.get_status_snapshot()
         eng_str = (f"engine: {eng['state']} | root sims: {eng['sim_count']}"
                    + (f"  (top move: {eng['top_visits']})"
@@ -461,14 +559,148 @@ class TimedMatchApp:
         hist_h = your_y - hist_y - 8
         self._draw_history(SIDE_X + 12, hist_y, panel.right - SIDE_X - 24, hist_h)
 
-        # New Game button.
-        btn = pygame.Rect(SIDE_X + 12, panel.bottom - 46,
-                          panel.right - SIDE_X - 24, 34)
-        self.new_game_button = btn
-        pygame.draw.rect(self.screen, (240, 240, 250), btn)
-        pygame.draw.rect(self.screen, (100, 100, 130), btn, width=1)
-        label = self.font_label.render("New Game", True, (30, 30, 60))
-        self.screen.blit(label, label.get_rect(center=btn.center))
+    def _draw_review_panel(self, panel: pygame.Rect) -> None:
+        """Post-game review side panel: navigation, snapshot info, clickable history."""
+        pad = 12
+        cx = SIDE_X + pad
+        cy = SIDE_Y + pad
+        width = panel.right - SIDE_X - pad * 2
+
+        # Header: "Review: move X of Y" + prev/next buttons
+        n = len(self.state.moves)
+        cur = self._review_index + 1  # 1-indexed for display; 0 means initial
+        header = f"Review: move {cur}/{n}" if cur > 0 else f"Review: initial position (of {n})"
+        header_surf = self.font_label.render(header, True, (30, 30, 60))
+        self.screen.blit(header_surf, (cx, cy))
+        cy += 24
+
+        # Prev / Next buttons
+        btn_w = 88
+        prev_rect = pygame.Rect(cx, cy, btn_w, 26)
+        next_rect = pygame.Rect(cx + btn_w + 8, cy, btn_w, 26)
+        self._review_prev_button = prev_rect
+        self._review_next_button = next_rect
+        for rect, txt, enabled in [
+            (prev_rect, "◀ Prev", self._review_index > -1),
+            (next_rect, "Next ▶", self._review_index < n - 1),
+        ]:
+            bg = (240, 240, 250) if enabled else (220, 220, 220)
+            pygame.draw.rect(self.screen, bg, rect)
+            pygame.draw.rect(self.screen, (100, 100, 130), rect, width=1)
+            fg = (30, 30, 60) if enabled else (150, 150, 150)
+            surf = self.font_label.render(txt, True, fg)
+            self.screen.blit(surf, surf.get_rect(center=rect.center))
+        cy += 34
+
+        # Reconstructed clocks at this position
+        user_t, model_t = self.state.clocks_at(self._review_index)
+        clk = self.font_row.render(
+            f"Model: {_fmt_clock(model_t)}   You: {_fmt_clock(user_t)}",
+            True, (60, 60, 90))
+        self.screen.blit(clk, (cx, cy))
+        cy += 20
+
+        # Search snapshot (only for model moves; user moves have no snapshot).
+        cy = self._draw_snapshot_block(cx, cy, width)
+
+        # Clickable move history (rest of panel above New Game button).
+        hist_bottom = panel.bottom - 60
+        self._draw_review_history(cx, cy + 4, width, hist_bottom - cy - 4)
+
+    def _draw_snapshot_block(self, cx: int, cy: int, width: int) -> int:
+        """Render the search snapshot for the currently-reviewed move.
+        Returns the y-coordinate just below the snapshot (for the next
+        widget to place itself). Returns cy unchanged if nothing to show."""
+        idx = self._review_index
+        if idx < 0 or idx >= len(self.state.moves):
+            # Initial position — no snapshot.
+            note = self.font_row.render(
+                "(initial position — no move played yet)",
+                True, (120, 120, 130))
+            self.screen.blit(note, (cx, cy))
+            return cy + 20
+
+        rec = self.state.moves[idx]
+        side_letter = "W" if rec.side == Color.WHITE else "B"
+        header = self.font_label.render(
+            f"Move {idx + 1}: {side_letter} {_move_str(rec.move)}"
+            f"  (thought {rec.thinking_time_seconds:.1f}s)",
+            True, (30, 30, 60))
+        self.screen.blit(header, (cx, cy))
+        cy += 22
+
+        snap = rec.search_snapshot
+        if snap is None:
+            # User's move — no MCTS ran, no snapshot to show.
+            note = self.font_row.render(
+                "(your move — no engine analysis stored)",
+                True, (120, 120, 130))
+            self.screen.blit(note, (cx, cy))
+            return cy + 20
+
+        # Model's move — show sim count, root value, top-N moves.
+        sim_ct = snap.get("sim_count", 0)
+        rv = snap.get("root_value", 0.0)
+        # root_value is from the mover's perspective — flip to White's
+        # perspective for consistency with positional_eval tool convention.
+        white_val = rv if rec.side == Color.WHITE else -rv
+        info = self.font_row.render(
+            f"engine sims: {sim_ct}   value (W): {white_val:+.3f}",
+            True, (60, 60, 90))
+        self.screen.blit(info, (cx, cy))
+        cy += 20
+
+        # Top moves table
+        top_moves = snap.get("top_moves", [])[:8]  # show up to 8
+        for tm in top_moves:
+            m_str = self._snapshot_move_str(tm)
+            visits = tm.get("visits", 0)
+            prob = tm.get("prob", 0.0) * 100
+            line = f"  {m_str:<10s} {visits:>4d}  {prob:>5.1f}%"
+            surf = self.font_row.render(line, True, (30, 30, 30))
+            self.screen.blit(surf, (cx, cy))
+            cy += 16
+        return cy + 4
+
+    def _snapshot_move_str(self, tm: dict) -> str:
+        """Render a top-move dict (from search_snapshot) as 'e2-e4' etc."""
+        fr = chr(ord('a') + tm["from"][1]) + str(tm["from"][0] + 1)
+        to = chr(ord('a') + tm["to"][1]) + str(tm["to"][0] + 1)
+        base = f"{fr}-{to}"
+        if tm.get("promotion"):
+            promo_char = {"Q": "Q", "R": "R", "B": "B", "N": "N", "K": "K"}.get(
+                tm["promotion"], "?")
+            base += f"={promo_char}"
+        return base
+
+    def _draw_review_history(self, x: int, y: int, w: int, h: int) -> None:
+        """Clickable move history. Populates self._review_history_rects
+        with (ply_index, rect) pairs for click detection."""
+        title = self.font_label.render("Move history", True, (60, 60, 90))
+        self.screen.blit(title, (x, y))
+
+        row_y = y + 20
+        row_h = 16
+        n_visible = max(1, (h - 20) // row_h)
+
+        # Show a window of moves centered around the current review index.
+        moves = self.state.moves
+        cur = max(0, self._review_index)  # clamp -1 → 0 for windowing
+        start = max(0, min(len(moves) - n_visible, cur - n_visible // 2))
+        end = min(len(moves), start + n_visible)
+
+        self._review_history_rects = []
+        for i, rec in enumerate(moves[start:end], start=start):
+            side_letter = "W" if rec.side == Color.WHITE else "B"
+            selected = (i == self._review_index)
+            rect = pygame.Rect(x, row_y + (i - start) * row_h, w, row_h - 1)
+            if selected:
+                pygame.draw.rect(self.screen, (255, 245, 200), rect)
+            self._review_history_rects.append((i, rect))
+            text = f"{i + 1:>3}. {side_letter} {_move_str(rec.move)}"
+            fg = (10, 10, 60) if selected else (30, 30, 30)
+            surf = self.font_row.render(text, True, fg)
+            self.screen.blit(surf, (x + 4, row_y + (i - start) * row_h))
 
     def _draw_clock_block(self, x: int, y: int, label: str,
                           seconds: float, ticking: bool) -> None:
