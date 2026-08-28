@@ -55,12 +55,18 @@ class BoardWidget:
     LAST_MOVE_TINT = (240, 230, 100, 90)
     ENDANGERED_TINT = (255, 90, 90, 100)
 
-    def __init__(self, x: int, y: int, size: int = 480):
-        """Board occupies a square region of `size` pixels starting at (x, y)."""
+    def __init__(self, x: int, y: int, size: int = 480,
+                 flipped: bool = False):
+        """Board occupies a square region of `size` pixels starting at (x, y).
+
+        flipped=False (default): White at bottom — standard chess view.
+        flipped=True: Black at bottom — useful when the human is playing Black.
+        """
         self.x = x
         self.y = y
         self.size = size
         self.square_size = size // 8
+        self.flipped = flipped
         # Font sized for the square; leave a small margin
         self.font = pygame.font.SysFont(
             "Segoe UI Symbol,DejaVu Sans,Arial Unicode MS",
@@ -71,10 +77,16 @@ class BoardWidget:
 
     def square_rect(self, rank: int, file: int) -> pygame.Rect:
         """Return the pygame.Rect for the given (rank, file) in screen coords."""
-        # rank 0 at bottom -> screen y grows downward, so invert
-        screen_row = 7 - rank
+        if self.flipped:
+            # Black at bottom: rank 7 at bottom (row 0), file 'h' on left
+            screen_row = rank
+            screen_col = 7 - file
+        else:
+            # White at bottom (standard): rank 0 at bottom, file 'a' on left
+            screen_row = 7 - rank
+            screen_col = file
         return pygame.Rect(
-            self.x + file * self.square_size,
+            self.x + screen_col * self.square_size,
             self.y + screen_row * self.square_size,
             self.square_size,
             self.square_size,
@@ -85,9 +97,14 @@ class BoardWidget:
         if not (self.x <= mx < self.x + self.size
                 and self.y <= my < self.y + self.size):
             return None
-        file = (mx - self.x) // self.square_size
+        screen_col = (mx - self.x) // self.square_size
         screen_row = (my - self.y) // self.square_size
-        rank = 7 - screen_row
+        if self.flipped:
+            file = 7 - screen_col
+            rank = screen_row
+        else:
+            file = screen_col
+            rank = 7 - screen_row
         return Position(int(rank), int(file))
 
     # ── Rendering ──────────────────────────────────────────────────────────
@@ -170,17 +187,21 @@ class BoardWidget:
             width=2,
         )
 
-        # Rank / file labels (small, along left and bottom)
+        # Rank / file labels (small, along left and bottom).
+        # In flipped view (Black at bottom): files go h→a L→R, ranks go 8→1
+        # bottom→top. In standard view: files a→h L→R, ranks 1→8 bottom→top.
         label_font = pygame.font.SysFont("Arial", 12)
         for i in range(8):
-            # Files a-h along bottom
-            label = label_font.render(chr(97 + i), True, (60, 60, 60))
+            # File letter at column i from left
+            file_letter = chr(97 + (7 - i)) if self.flipped else chr(97 + i)
+            label = label_font.render(file_letter, True, (60, 60, 60))
             surface.blit(label, (
                 self.x + i * self.square_size + 2,
                 self.y + self.size - 14,
             ))
-            # Ranks 1-8 along left (rank 0 at bottom -> label '1')
-            label = label_font.render(str(i + 1), True, (60, 60, 60))
+            # Rank number at row i from bottom
+            rank_num = (8 - i) if self.flipped else (i + 1)
+            label = label_font.render(str(rank_num), True, (60, 60, 60))
             surface.blit(label, (
                 self.x + 2,
                 self.y + (7 - i) * self.square_size + 2,

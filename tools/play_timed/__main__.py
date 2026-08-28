@@ -131,11 +131,16 @@ class TimedMatchApp:
         self.font_row = pygame.font.SysFont("Consolas,Menlo,Courier", 13)
         self.font_status = pygame.font.SysFont("Arial", 14)
 
-        # Board renderer (stateless).
-        self.board_widget = BoardWidget(BOARD_X, BOARD_Y, BOARD_SIZE)
-
         # Match state.
         user_color = Color.WHITE if settings["user_side"] == "W" else Color.BLACK
+
+        # Board renderer (stateless). Flip orientation when playing Black so
+        # your pieces are always on the near side.
+        self.board_widget = BoardWidget(
+            BOARD_X, BOARD_Y, BOARD_SIZE,
+            flipped=(user_color == Color.BLACK),
+        )
+
         user_tc = TimeControl(settings["user_base_seconds"],
                               settings["user_increment_seconds"])
         model_tc = TimeControl(settings["model_base_seconds"],
