@@ -329,7 +329,13 @@ class TimedMatchApp:
 
         # Single, non-promotion move
         move = legal[0]
-        applied = self.state.apply_move(move)
+        # Grab the engine's current analysis of THIS position (which is the
+        # ponder work done while you were thinking). The snapshot reflects
+        # the engine's top move options FOR YOU + its value estimate of
+        # the position — perfect for review.
+        ponder = self.engine.get_current_result()
+        snap = ponder.get("search_snapshot") if ponder else None
+        applied = self.state.apply_move(move, search_snapshot=snap)
         if applied:
             self.selected_square = None
             self.legal_targets = set()
@@ -357,10 +363,14 @@ class TimedMatchApp:
                 "Q": PieceType.QUEEN, "R": PieceType.ROOK, "B": PieceType.BISHOP,
                 "N": PieceType.KNIGHT, "K": PieceType.KING,
             }[label]
+            # Snapshot engine's ponder analysis of the pre-move position
+            # so review mode can show what it was thinking about your options.
+            ponder = self.engine.get_current_result()
+            snap = ponder.get("search_snapshot") if ponder else None
             for m in self.state.game.get_legal_moves():
                 if (m.from_pos == from_sq and m.to_pos == to_sq
                         and m.promotion == promo_type):
-                    self.state.apply_move(m)
+                    self.state.apply_move(m, search_snapshot=snap)
                     self.status_message = f"You played {_move_str(m)}."
                     self.engine.descend(m)
                     break
@@ -630,22 +640,28 @@ class TimedMatchApp:
         cy += 22
 
         snap = rec.search_snapshot
+        is_user_move = (rec.side == self.state.user_color)
         if snap is None:
-            # User's move — no MCTS ran, no snapshot to show.
-            note = self.font_row.render(
-                "(your move — no engine analysis stored)",
-                True, (120, 120, 130))
+            # No ponder result was available at capture time (e.g. you
+            # played instantly, before the engine had done a chunk).
+            msg = "(played too fast — no ponder analysis captured)"
+            note = self.font_row.render(msg, True, (120, 120, 130))
             self.screen.blit(note, (cx, cy))
             return cy + 20
 
-        # Model's move — show sim count, root value, top-N moves.
+        # Both sides have snapshots now:
+        #   - Model moves: MCTS run during model's budget window
+        #   - User moves: MCTS was pondering during your thinking time
+        # Label the source so the reviewer knows what they're looking at.
         sim_ct = snap.get("sim_count", 0)
         rv = snap.get("root_value", 0.0)
         # root_value is from the mover's perspective — flip to White's
         # perspective for consistency with positional_eval tool convention.
         white_val = rv if rec.side == Color.WHITE else -rv
+        source_lbl = ("engine's ponder"
+                      if is_user_move else "engine's own search")
         info = self.font_row.render(
-            f"engine sims: {sim_ct}   value (W): {white_val:+.3f}",
+            f"{source_lbl}: {sim_ct} sims   value (W): {white_val:+.3f}",
             True, (60, 60, 90))
         self.screen.blit(info, (cx, cy))
         cy += 20
