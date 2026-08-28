@@ -42,8 +42,39 @@ import torch  # noqa: E402
 
 from extinction_chess import ExtinctionChess, Move  # noqa: E402
 from alphazero import (  # noqa: E402
-    AlphaZeroNet, AlphaZeroEvaluator, mcts_search, descend_root,
+    AlphaZeroNet, AlphaZeroEvaluator, mcts_search,
 )
+
+
+def _descend_root_structural(root, played_move):
+    """Local replacement for alphazero.descend_root that compares moves by
+    (from, to, promo) tuple instead of Python identity.
+
+    Bug: alphazero.descend_root uses `child.move == played_move` which falls
+    back to identity comparison (Move class doesn't implement __eq__). That
+    works for self-play because both sides pull the same Move object from
+    the MCTS tree. It BREAKS for UI-driven descent, where the user's Move
+    object comes from a fresh get_legal_moves() call and doesn't
+    identity-match any Move in the tree — so descend_root ALWAYS returns
+    None and the tree gets discarded on every move.
+
+    This local version matches by field values, which is what we want for
+    Phase 2 pondering to actually accumulate across turns.
+    """
+    if root is None:
+        return None
+    for child in root.children:
+        cm = child.move
+        pm = played_move
+        if (cm.from_pos.rank == pm.from_pos.rank
+                and cm.from_pos.file == pm.from_pos.file
+                and cm.to_pos.rank == pm.to_pos.rank
+                and cm.to_pos.file == pm.to_pos.file
+                and cm.promotion == pm.promotion):
+            if not child.is_expanded or child.visit_count == 0:
+                return None
+            return child
+    return None
 
 
 DEFAULT_SIMS_PER_SECOND = 10.0
@@ -316,7 +347,10 @@ class Engine:
                     continue
 
                 # Then descend the tree to the corresponding subtree.
-                promoted = descend_root(self._w_root, [move])
+                # Uses our structural comparison — NOT alphazero.descend_root
+                # (which would fail on identity comparison since UI moves
+                # are fresh Move instances, not the ones in the tree).
+                promoted = _descend_root_structural(self._w_root, move)
                 self._w_game = new_game_copy
                 self._w_root = promoted   # may be None → fresh search next chunk
                 self._w_state = "SEARCHING"
