@@ -465,6 +465,117 @@ replay_buffer/ directory. Deletion takes effect on the next iter's load.
   .gitignore                                — dataset/ excluded
 
 
+== TIMED MATCH TOOL (local, pygame) ==
+
+┌─ WHAT IT IS ────────────────────────────────────────────────────────────┐
+│ Play a full extinction chess game against any local checkpoint under   │
+│ chess-clock rules. Supports per-side time controls (odds).             │
+│                                                                         │
+│ Purpose: measure model strength against a human. As benchmarks vs      │
+│ iter 100 saturate (already 88.5% at iter 1000), human matchplay        │
+│ becomes the more informative signal for later iters. Time odds also    │
+│ enables us to measure "how much handicap can iter N give to lose to    │
+│ iter 100" — an unsaturating strength curve.                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ LAUNCH ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  cd "c:\Users\henry\Desktop\Extinction Chess RL"
+  python -m tools.play_timed
+
+Startup dialog opens (tkinter): pick .pt file from models/, choose
+White/Black, set per-side base minutes + increment seconds. Four presets
+apply to BOTH sides at once: 1+0, 3+2, 5+3, 10+5. For odds, apply preset
+then hand-edit one side.
+
+━━ PHASE STATUS (Aug 27 2026) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Phase 1  SHIPPED (commit 64315f1):
+    Board + click-click move input + legal-move highlighting
+    Two clocks (mm:ss.d, amber <30s, red <10s)
+    Promotion dialog with Q/R/B/N/K + CANCEL (cancel reverts the move)
+    Model plays via time-budget→sim-count conversion
+    Game-end banner (extinction / flag / draw)
+    "New Game" button returns to startup dialog with prev settings
+
+  Phase 2 (planned): pondering
+    Engine thread continues MCTS during user's turn. When user moves,
+    engine descends into that move's subtree (via alphazero.descend_root
+    + prev_root reuse mechanism shipped Aug 3) and keeps searching. On
+    model's turn, engine has already done meaningful work — plays a
+    much stronger move than sim-budget-alone would suggest.
+
+  Phase 3 (planned): post-game review
+    All hidden information (per-move search snapshots stored in
+    MoveRecord.search_snapshot during play) becomes visible. Click
+    through moves to see model's top choices + value at each position.
+
+━━ FILES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  tools/play_timed/
+    __init__.py       empty package marker
+    __main__.py       pygame app, main loop, promotion dialog, drawing
+    startup.py        tkinter startup dialog
+    state.py          MatchState + TimeControl + MoveRecord dataclass
+    engine.py         MCTS worker thread + sims/sec warmup
+
+Imports from existing code (read-only reuse):
+  tools/positional_eval/board_widget.py  (BoardWidget — stateless)
+  src/extinction_chess.py                (ExtinctionChess, Color, Move)
+  src/alphazero.py                       (AlphaZeroNet, AlphaZeroEvaluator,
+                                          mcts_search)
+
+━━ TIME MANAGEMENT (implemented in state.py) ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  budget_seconds = (model_remaining / 30) + model_increment
+  capped to [1, 30]
+
+  Rationale: 30 ≈ expected moves remaining in an extinction chess game.
+  Adaptive: as remaining shrinks, per-move budget shrinks proportionally.
+  Increment is "free" time we can always use.
+
+  Sim conversion:
+  sim_budget = int(budget_seconds * measured_sims_per_second)
+
+  Sims/sec is measured on the starting position via engine.warmup()
+  before the clock starts. User's laptop measured ~10 sims/sec on CPU.
+
+━━ DESIGN INVARIANTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Clocks:
+    Only ONE clock runs at a time (side to move). Time elapsed since
+    the active clock last started is subtracted lazily on read — no
+    threading needed for clock ticking. See state._elapsed_active().
+
+  Threading:
+    Main thread runs pygame event loop + rendering.
+    Engine runs MCTS in a worker thread (state.py never touches it).
+    Communication via engine.is_done() + engine.take_result() polling.
+
+  Move validation:
+    Legal moves come from game.get_legal_moves(). Clicks are matched
+    against those directly. Promotion: multiple legal moves with
+    different promotion types on same from→to — dialog picks one.
+
+  Game state preservation:
+    MoveRecord stores clock_before, clock_after, thinking_time_seconds
+    for every move. search_snapshot stores the model's top moves +
+    root value for Phase 3 review. Filled during play, hidden until
+    Phase 3 review UI lands.
+
+━━ ROLLBACK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Tool is fully self-contained under tools/play_timed/. Deleting that
+directory removes it with zero side effects. Or:
+
+  git rm -r tools/play_timed/
+  git commit -m "Remove play_timed tool"
+
+No existing code was modified. If Phase 1's import of BoardWidget from
+positional_eval breaks something, that's a bug in Phase 1 — positional_eval
+was not touched.
+
+
 == HELPER TIMEOUT FIX (Aug 24-26 2026) ==
 
 ┌─ STATUS ────────────────────────────────────────────────────────────────┐
