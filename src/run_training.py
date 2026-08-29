@@ -25,8 +25,20 @@ if __name__ == "__main__":
         # more uniformly across children (raising the exploration floor);
         # higher noise_weight increases the noise's contribution to the noised
         # prior. Rollback: revert both values to 0.3/0.25.
-        dirichlet_alpha=1.0,
-        noise_weight=0.5,
+        # Aug 29 bump: raised from 1.0/0.5 (Aug 8 values). Motivation:
+        # positional_eval tool showed raw NN priors on R/B/K promotions
+        # still collapsed to ~0% at iter 1010 despite the Aug 8 bump —
+        # policy head hadn't recovered fast enough. Pushing wider noise
+        # to force those planes into MCTS visits at training time.
+        # Revert plan if this backfires (see commands.txt "MCTS
+        # EXPLORATION PARAMETERS" section for full history):
+        #   - Symptoms of backfire: policy loss climbs > +0.10 for 2+
+        #     iters without recovery; benchmark H2H vs a same-arch
+        #     older checkpoint drops > 5%; tactical @400 drops > 10%.
+        #   - Revert action: set back to 1.0 / 0.5 (the Aug 8 values,
+        #     already validated at iter 1010).
+        dirichlet_alpha=2.0,
+        noise_weight=0.75,
         # instant_win_positions=1000,  # Disabled for now; revisit at iter 270
         hard_win_positions=300,
         extra_hard_win_positions=0,  # disabled to stop further damage

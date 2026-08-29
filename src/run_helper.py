@@ -72,6 +72,16 @@ def main():
                               # See helper_595207.log for the smoking gun:
                               # tree_reuse=off + avg_process=916us/batch
                               # (vs main's 513us on 2080 Ti) = ~3h/200 games.
+        # Aug 29: align exploration params with main. Prior to this,
+        # helper silently ran with batched_self_play's paper-tuned
+        # defaults (dirichlet_alpha=0.3, noise_weight=0.25) while main
+        # had been bumped Aug 8 → so ~half of training data per iter
+        # used narrower exploration than the other half. Diverging
+        # exploration is bad for signal isolation when we're trying to
+        # measure the bump's effect. Keep helper values EXACTLY MATCHED
+        # to run_training.py's — if you change one, change the other.
+        dirichlet_alpha=2.0,
+        noise_weight=0.75,
     )
 
     # Flatten games into position-level arrays
