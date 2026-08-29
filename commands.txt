@@ -306,21 +306,93 @@ outputs current-player-perspective; the tool converts).
         see rare-move planes (e.g., R/B/K underpromotions that fall
         outside the default top 20).
 
-  4. MCTS parameters (Aug 7 additions)
+  4. MCTS parameters (Aug 7 additions; c_puct range extended Aug 29)
      Three cyclable-preset rows:
-       c_puct:          2.5 (default) / 3.0 / 4.0 / 5.0 / 10.0
-       noise_weight:    0.0 / 0.15 / 0.25 (training) / 0.35 / 0.50
-       dirichlet_alpha: 0.3 (training) / 0.6 / 1.0 / 2.0
+       c_puct:          2.5 (main + helper) / 3.0 / 4.0 / 5.0 / 7.5 /
+                        10 / 15 / 25 / 50
+       noise_weight:    0.0 / 0.15 / 0.25 (HELPER) / 0.35 / 0.50 (MAIN)
+                        / 0.75 / 1.0 (Aug 29 — extreme diagnostic;
+                          1.0 replaces raw prior entirely with noise)
+       dirichlet_alpha: 0.3 (HELPER) / 0.6 / 1.0 (MAIN) / 2.0
      Purpose: exploration diagnostic — see whether cranking noise/c_puct
      causes normally-collapsed rare-move priors (e.g., R/B/K promotions)
      to become visited.
 
-     Pill coloring (Aug 8 refinement):
-       GREY  = value matches TRAINING's setting (not the tool's default)
-       ORANGE = value differs from training (diagnostic-only state)
-     So all grey = you're evaluating with the same MCTS conditions
-     self-play uses. Any orange = you're in exploratory mode and
-     results won't reproduce training behavior.
+     ⚠ Main vs helper drift (discovered Aug 29):
+       Main was bumped Aug 8 to noise_weight=0.5, dirichlet_alpha=1.0
+       (see run_training.py). Helper (run_helper.py) never got the
+       overrides and still falls through to batched_self_play defaults
+       (noise_weight=0.25, dirichlet_alpha=0.3 — the paper's original
+       chess-tuned values). So ~half the training data per iter comes
+       from the pre-bump narrower exploration. TODO: align these,
+       ideally by exposing both as CLI args on run_helper.py.
+
+       c_puct is the same for both (2.5 = batched_self_play default;
+       neither run_training.py nor run_helper.py overrides).
+
+     Extreme c_puct interpretation: c_puct affects EVERY tree node (not
+     just root — that's what noise_weight/dirichlet_alpha do). At
+     c_puct=50 the UCB score is essentially "just follow the prior;
+     ignore Q entirely" for most of the search, so visits distribute
+     nearly proportionally to raw policy priors. Useful for finding the
+     tipping point where a rare-move plane starts getting visits at all.
+
+     THEORETICAL CEILING on c_puct (⚠ important — extended Aug 29):
+       At c_puct → ∞ the UCB simplifies to:
+         UCB ≈ c_puct * prior * sqrt(N_parent) / (1 + N_child)
+       Since c_puct scales all children equally, the RANKING becomes
+       prior / (1 + N_child). Visits distribute PROPORTIONALLY TO PRIOR
+       at equilibrium: N_child ≈ N_total * prior.
+
+       Implication: no amount of c_puct helps if the raw prior is
+       effectively zero. If a move's policy-head output is 1e-8, then
+       even at c_puct=100,000 and 800 sims: expected visits = 800 * 1e-8
+       = 6e-6, i.e., zero for any integer allocation.
+
+       Extended preset range: 100 / 500 / 5000 / 100000 was added to let
+       you PROVE this in the tool. If you crank c_puct across those
+       values and a move stays at 0 visits, its raw prior is truly
+       zero (fully collapsed) — c_puct can't rescue it. In that case
+       the fix is at training time (bump noise_weight/dirichlet_alpha in
+       run_training.py + run_helper.py, or reset policy-head weights).
+       If you instead see visits START appearing above c_puct=X, that's
+       X ≈ where the exploration term overtakes Q on the raw prior.
+
+     Pill coloring (updated Aug 29):
+       GREY   = value matches MAIN's setting (post-Aug-8 bump values).
+                 Main is what's driving the model's directional learning,
+                 so MAIN is the "training" reference.
+       ORANGE = value differs from main's setting. Helper's actual values
+                 (noise=0.25, alpha=0.3) will show as ORANGE — that's
+                 the drift flagged above, not a tool bug.
+
+     ⚠ Dirichlet noise is ROOT-ONLY (documented Aug 29):
+       noise_weight × dirichlet_alpha only affect the ROOT node's priors,
+       NOT deeper tree nodes. See mcts_search in src/alphazero.py:
+         - Line 1081: reuse path — noise applied once when prior root is
+                      promoted (with the newly-descended root)
+         - Line 1143: fresh path — noise applied once during initial
+                      root expansion
+       Every deeper node uses the raw NN prior with NO noise injected.
+
+       Consequences:
+       - GOOD for training data collection: every move a self-play game
+         plays runs a fresh MCTS with that position AS THE NEW ROOT, so
+         every promotable position eventually becomes a root and gets
+         noise → R/B/K promotions DO appear in training data over enough
+         games. Root noise is the intended mechanism for exploration
+         diversity.
+       - BAD for tactical lookahead: if position A is the root and
+         position F (5 plies deep) allows a rare-move choice, F never
+         gets noise. MCTS's raw prior at F is used unmodified → R/B/K
+         at F get near-zero visits → MCTS can't "see through" a
+         variation like "play X now to enable an R-promotion win in 5".
+       - Making noise happen at every expansion is possible but not
+         standard AlphaZero — would slow MCTS, add RNG per expansion,
+         and hurt planning quality on non-rare-move positions. Usually
+         not worth it. The right fix for rare-move discovery is to make
+         those positions arise as ROOTS more often (bump root noise,
+         accept longer training time) rather than to noise the whole tree.
 
 ━━ Common exploration diagnostic recipe ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -336,6 +408,13 @@ outputs current-player-perspective; the tool converts).
 5. Re-evaluate. If the missing move now gets visits → mechanism confirmed.
 6. Push c_puct=10, noise_weight=0.5, dirichlet_alpha=2 for maximum
    exploration — see visits recipe from Aug 8 tool session.
+7. If a move STILL gets 0 visits at (10, 0.5, 2.0), climb the c_puct
+   ladder further: 15 → 25 → 50. Since c_puct affects the whole tree
+   (unlike noise, which only touches the root), it's the right knob
+   for "MCTS refuses to consider this deep continuation." If even
+   c_puct=50 doesn't move the needle, the raw policy prior is
+   truly zero — bump the underlying training exploration params or
+   inspect for a policy-head degeneracy.
 
 ━━ Concurrent-instances warning ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1282,6 +1361,178 @@ sbatch --partition=compute --gres=gpu:rtx_4090:1 --cpus-per-task=4 --mem=16G --t
 Recent history of this happening:
 - Jul 26: iter 870 auto-battery skipped iter 810. Manually submitted
   compare_870vs810 as a separate job to get the rollback-threshold data.
+
+
+== TRAINING PARAMETER CHANGELOG ==
+
+Chronological record of hyperparameter changes to run_training.py (main
+self-play) and run_helper.py (helper self-play). Each entry: date /
+iter range affected / what changed / why. When adding a new entry,
+also update the "CURRENT VALUES" table at the bottom.
+
+Note: this changelog captures INTENDED training config changes. For
+scattered mid-experiment values (LR bump A/B, buffer size trials, etc.)
+that were reverted quickly, check training_history.txt notes for that
+iter range. Backfilled Aug 29 from git log + memory files — earlier
+Phase changes may be incomplete; add corrections as encountered.
+
+━━ MCTS EXPLORATION PARAMETERS (complete history) ━━━━━━━━━━━━━━━━━━━━
+
+These three were the untouched originals for the entire pre-Aug-8 run
+(iter 0 → 970). Any change to them lands here — this list is complete
+for the exploration knobs as of Aug 29 2026:
+
+  Date        Iter    Param                       From → To     Scope
+  ─────────── ─────── ─────────────────────────── ────────────  ───────
+  (pre-Aug 8) 0-970   c_puct                      2.5           main + helper
+  (pre-Aug 8) 0-970   dirichlet_alpha             0.3           main + helper
+  (pre-Aug 8) 0-970   noise_weight                0.25          main + helper
+  Aug 8       971+    dirichlet_alpha             0.3 → 1.0     MAIN only
+  Aug 8       971+    noise_weight                0.25 → 0.5    MAIN only
+  Aug 29      1031+   dirichlet_alpha             1.0 → 2.0     main + helper
+  Aug 29      1031+   noise_weight                0.5 → 0.75    main + helper
+              ⚠ Effective-iter caveat: SCP landed AFTER job 602357
+              (iters 1025+) had already loaded Python, so 602357
+              STILL runs 1.0/0.5. First iter with the bump active is
+              the FIRST iter of the resubmit AFTER 602357 — likely
+              ~iter 1031. K=5 buffer turnover means first FULLY
+              post-bump checkpoint is ~iter 1035-1040. Cross-refs
+              the "SCP path trap" section below.
+              Simultaneously fixed the main-vs-helper drift by
+              adding explicit dirichlet_alpha/noise_weight overrides
+              to run_helper.py's batched_self_play call (previously
+              defaulted to 0.3/0.25 silently). The two sides are now
+              locked to matching values; a comment in run_helper.py
+              reminds any future editor to keep them synchronized.
+
+  Motivation for Aug 29 bump: positional_eval tool showed raw NN
+  priors on R/B/K promotions still ~0% at iter 1010 despite the
+  Aug 8 bump. Policy head recovery slower than expected → push
+  wider noise to increase R/B/K visit rate at training time.
+
+  REVERT PLAN (add this to the checklist when interpreting future
+  benchmarks / batches):
+    Symptoms of backfire (any of these → consider revert):
+      * Policy loss climbs >+0.10 for 2+ iters without recovery
+      * Benchmark H2H vs any recent same-arch checkpoint drops >5%
+      * Tactical @400 drops >10% from post-bump baseline (~95%)
+      * Value loss climbs >+0.05 for 3+ iters
+    Revert action:
+      1. Edit src/run_training.py + src/run_helper.py: set
+         dirichlet_alpha=1.0 and noise_weight=0.5 (Aug 8 values,
+         already validated at iter 1010).
+      2. SCP both to cluster; effect on next auto-resubmit.
+      3. Add a row to this table: "revert Aug 8 values, main + helper".
+    Safety property: reverting to 1.0/0.5 puts us back in a
+    validated-good state — no risk of further drift.
+
+  Going forward: whenever any of the three changes, add a row above.
+  Include which side (main / helper / both) since the drift bug taught
+  us the two can diverge silently.
+
+  BENCHMARK IMPACT (documented Aug 29):
+    None DIRECTLY. All benchmark scripts hardcode dirichlet_alpha=0,
+    noise_weight=0 for deterministic evaluation:
+      - src/bench_vs_tactical.py:92
+      - src/compare_extensive.py:56
+      - src/bench_win_taking.py:198
+    So bumping training-time exploration doesn't touch how benchmarks
+    SCORE a model; benchmarks always play the model with pure NN prior
+    + tree search (no noise).
+    Indirect effect: exploration changes WHAT the model learns, so
+    benchmarks measuring the trained model will reflect the change
+    over time. Give the buffer 2-3 iters (K=5 → ~10-15 iters for full
+    turnover) before reading benchmark scores as post-change signal.
+
+━━ Chronological changes (other hyperparameters) ━━━━━━━━━━━━━━━━━━━━━
+
+  Date         Iter       Param(s) touched               From → To
+  ──────────── ────────── ────────────────────────────── ─────────────────
+  ~May 13      ~371       Phase 11/12 (commit a5d9803):
+                          - tactical_shortcuts: single-winner → multi-winner distribute
+                          - drilling_epochs                    10 → 5
+                          - drilling_lr_factor                 (see LR-bump note)
+                          - Added hard_win_positions=300
+  Jul 5        —          helper.sh threads/CPUs               4 → 8
+  Jul 7        ~700       LR (main+drill)                      0.00002 → 0.00005
+                          drilling_lr_factor                   0.5 → 0.2 (LR-bump compensation)
+                          (LR bump was an experiment; see below for revert)
+  Jul 14       ~790       LR (main+drill) REVERTED             0.00005 → 0.00002
+                          drilling_lr_factor REVERTED          0.2 → 0.5
+                          Reason: iter 790 benchmark showed regression
+                          (win-taking @200 94% → 87%, tactical @400 95% → 80%)
+                          H2H stalled at 0% vs iter 780. See
+                          memory/lr_bump_experiment_failed.md.
+  ~Phase 13b   ~865       extra_hard_win_positions             300 → 0
+                          Reason: "disabled to stop further damage"
+                          (drilling-drift regression)
+  ~Phase 14    ~910       replay_buffer_size (K)               3 → 5
+                          num_epochs                           10 → 3
+                          Reason: with K=5 rolling buffer, each position seen
+                          ~15× over its lifetime; reduce per-iter epochs.
+  Aug 3        ~940       use_tree_reuse                       False → True
+                          Main only. Helpers followed on Aug 24 after
+                          diagnosed timeout (see below).
+                          Measured 1.5× wall-time speedup at iter 930 (job
+                          586087). See memory/mcts_subtree_reuse_port.md.
+  Aug 8        ~971       (See MCTS EXPLORATION PARAMETERS section above
+                          for exploration bump details — dirichlet_alpha
+                          0.3→1.0, noise_weight 0.25→0.5, main only.)
+  Aug 24       ~996       Helper: use_tree_reuse               False → True
+                          Helper SBATCH wall time                2h45m → 4h
+                          Reason: helpers timing out on trpro-slurm1
+                          after cluster came back from Aug 9-24 drain;
+                          diagnosed non-reuse as the cause. See
+                          memory/helper_timeout_fix (not persisted as
+                          separate memory; captured in job history around
+                          iters 989-1000).
+
+━━ CURRENT VALUES (as of Aug 29 2026, iter 1019+) ━━━━━━━━━━━━━━━━━━━━
+
+Main (run_training.py):
+  learning_rate           = 0.00002
+  weight_decay            = (default)
+  games_per_iteration     = 400
+  num_simulations         = 800
+  c_puct                  = 2.5     (batched_self_play default; not overridden)
+  dirichlet_alpha         = 2.0     ★ post-Aug-29 bump (was 1.0 Aug 8-29)
+  noise_weight            = 0.75    ★ post-Aug-29 bump (was 0.5 Aug 8-29)
+  temp_threshold          = 30      (batched_self_play default)
+  num_epochs              = 3       ★ Phase-14 reduction (was 10)
+  replay_buffer_size (K)  = 5       ★ Phase-14 buffer
+  hard_win_positions      = 300
+  extra_hard_win_positions= 0       ★ disabled since Phase-13b
+  drilling_epochs         = 5
+  drilling_lr_factor      = 0.5
+  extra_hard_epochs       = 5
+  extra_hard_lr_factor    = 0.025
+  use_tree_reuse          = True    ★ Aug 3
+  helpers_enabled         = True
+  helpers_per_iter        = 2
+  benchmark_enabled       = True
+  max_wall_time           = 23 * 3600 (exit clean before SLURM 24h limit)
+
+Helper (run_helper.py + helper.sh):
+  num_games          = 200    (per helper; 2 helpers → 400 games/iter total)
+  num_simulations    = 800
+  c_puct             = 2.5    (batched_self_play default)
+  dirichlet_alpha    = 2.0    ★ Aug 29 — aligned with main (was 0.3 pre-fix)
+  noise_weight       = 0.75   ★ Aug 29 — aligned with main (was 0.25 pre-fix)
+  temp_threshold     = 30
+  num_parallel       = 50
+  num_threads        = 4
+  max_batch          = 512
+  use_tree_reuse     = True   ★ Aug 24
+  SBATCH wall time   = 4h     ★ Aug 24
+
+Network architecture (unchanged since ~history-planes deploy):
+  num_blocks    = 20
+  num_filters   = 256
+  in_channels   = 115  (14 base + 8 history planes × 14 + repetition + castling)
+
+Historical values that have NEVER been overridden and match the
+batched_self_play/mcts_search defaults: c_puct, mcts_batch_size (8),
+max_batch (512 for main, matches helper).
 
 
 == UPDATING TRAINING HISTORY FILES ==
