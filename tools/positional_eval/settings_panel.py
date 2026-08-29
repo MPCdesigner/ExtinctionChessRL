@@ -65,35 +65,39 @@ class SettingsPanel:
              "_max_moves_shown_index", "{}"),
         ]
 
-        # MCTS parameters — session-only. Defaults MATCH the tool's current
-        # hardcoded behavior (c_puct=2.5 from mcts_search default; noise_weight=0
-        # and dirichlet_alpha's default doesn't matter when noise_weight=0 —
-        # we pick 0.3 which is what training uses so the value is meaningful
-        # once noise is enabled). Click a param row to cycle its preset value.
+        # MCTS parameters — session-only. Session defaults: c_puct=2.5 and
+        # noise_weight=0 (evaluate deterministically with just the model
+        # prior — that's the useful positional-analysis mode). Click a
+        # param row to cycle its preset value.
         #
-        # Presets are chosen to bracket the common range for each param:
-        #   c_puct:          2.5 (default) → higher = more exploration
-        #   noise_weight:    0.0 (default, no noise) → 0.25 = training default
-        #   dirichlet_alpha: 0.3 (training default) → higher = more uniform
-        self._c_puct_presets = [2.5, 3.0, 4.0, 5.0, 10.0]
-        self._noise_weight_presets = [0.0, 0.15, 0.25, 0.35, 0.50]
+        # Presets bracket the common range for each param:
+        #   c_puct:          2.5 (main + helper) → higher = more exploration
+        #                    across the whole tree (not just root)
+        #   noise_weight:    0.0 (session default; deterministic eval) →
+        #                    0.25 = helper's self-play value →
+        #                    0.50 = main's self-play value (post-Aug-8 bump)
+        #   dirichlet_alpha: 0.3 = helper's value / 1.0 = main's value
+        self._c_puct_presets = [2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0, 25.0,
+                                50.0, 100.0, 500.0, 5000.0, 100000.0]
+        self._noise_weight_presets = [0.0, 0.15, 0.25, 0.35, 0.50, 0.75, 1.0]
         self._dirichlet_alpha_presets = [0.3, 0.6, 1.0, 2.0]
         self._c_puct_index = 0
         self._noise_weight_index = 0
         self._dirichlet_alpha_index = 0
 
         # Config-driven so adding a new param is a one-line change here.
-        # Each tuple: (label, presets_attr, index_attr, format_str, training_idx).
-        # training_idx = index in the presets list whose value matches what
-        # training self-play uses (see src/alphazero.py mcts_search defaults
-        # + noise_weight=0.25 in batched_self_play). The pill is grey when
-        # the current index == training_idx, orange otherwise — so at a
-        # glance you can see whether the tool is running in "would-match-
-        # training" conditions or is in exploratory-diagnostic mode.
+        # Each tuple: (label, presets_attr, index_attr, format_str, main_idx).
+        # main_idx = index in the presets list whose value matches what
+        # MAIN training self-play uses (see run_training.py). Pill is grey
+        # when current index == main_idx, orange otherwise. Reference is
+        # MAIN (not helper) because main is what drives the model's
+        # directional learning; helper drifts as of Aug 29 (noise=0.25,
+        # alpha=0.3 — the pre-Aug-8 batched_self_play defaults). Aligning
+        # helper to match main is a separate TODO — see commands.txt.
         self._mcts_params = [
             ("c_puct",          "_c_puct_presets",          "_c_puct_index",          "{:.2g}", 0),  # 2.5
-            ("noise_weight",    "_noise_weight_presets",    "_noise_weight_index",    "{:.2f}", 2),  # 0.25
-            ("dirichlet_alpha", "_dirichlet_alpha_presets", "_dirichlet_alpha_index", "{:.2g}", 0),  # 0.3
+            ("noise_weight",    "_noise_weight_presets",    "_noise_weight_index",    "{:.2f}", 5),  # 0.75 (MAIN, post-Aug-29)
+            ("dirichlet_alpha", "_dirichlet_alpha_presets", "_dirichlet_alpha_index", "{:.2g}", 3),  # 2.0 (MAIN, post-Aug-29)
         ]
 
         self.font_header = pygame.font.SysFont("Arial", 14, bold=True)
