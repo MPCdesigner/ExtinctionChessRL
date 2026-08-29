@@ -40,6 +40,20 @@ if _SRC_DIR not in sys.path:
 
 import torch  # noqa: E402
 
+# ── PyTorch CPU threading ──────────────────────────────────────────────────
+# For CPU-only laptops (no GPU), NN eval dominates MCTS wall time. PyTorch
+# defaults to 1 BLAS thread on some Windows installs, leaving ~85% of a
+# modern multi-core CPU idle. Cap at the physical core count to avoid the
+# coordination overhead of hyperthreaded logical cores (14 is the P+E
+# physical count on Alder/Raptor Lake i7-13700H; safe upper bound on
+# smaller CPUs too since we take min with os.cpu_count).
+_TORCH_CPU_THREADS = min(14, os.cpu_count() or 4)
+try:
+    torch.set_num_threads(_TORCH_CPU_THREADS)
+except Exception:
+    # Only fails if already frozen after prior torch use; harmless to skip.
+    pass
+
 from extinction_chess import ExtinctionChess, Move  # noqa: E402
 from alphazero import (  # noqa: E402
     AlphaZeroNet, AlphaZeroEvaluator, mcts_search,
@@ -91,9 +105,23 @@ class Engine:
           from main at any time.
     """
 
-    def __init__(self, model_path: str, device: str = "cpu"):
+    def __init__(self, model_path: str, device: str = "cpu",
+                 tactical_level: str = "basic"):
+        """tactical_level is one of "off", "basic", "advanced":
+
+          off       — mcts_search runs with tactical_shortcuts=False. Model
+                      must find mate-in-1 via visits.
+          basic     — mcts_search runs with tactical_shortcuts=True. Root
+                      shortcut fires on mate-in-1. Same as training.
+          advanced  — same MCTS call as basic; the depth-2 filter is
+                      applied post-MCTS at play time by __main__ (see
+                      _apply_advanced_shortcut). Engine itself just
+                      records the level so main can look it up.
+        """
+        assert tactical_level in ("off", "basic", "advanced"), tactical_level
         self.model_path = model_path
         self.device = torch.device(device)
+        self.tactical_level = tactical_level
 
         self.model, meta = AlphaZeroNet.load_checkpoint(model_path, migrate=True)
         self.model = self.model.to(self.device).eval()
@@ -283,13 +311,17 @@ class Engine:
 
             self._interrupt_chunk.clear()
             try:
+                # tactical_shortcuts controls the depth-1 root shortcut
+                # inside mcts_search itself. "advanced" adds a depth-2
+                # filter applied post-MCTS at play time in __main__.
+                use_root_shortcut = (self.tactical_level != "off")
                 move_visits, root_value, new_root = mcts_search(
                     self._w_game, self.evaluator,
                     num_simulations=target,
                     c_puct=2.5,
                     dirichlet_alpha=0.0,
                     noise_weight=0.0,
-                    tactical_shortcuts=True,
+                    tactical_shortcuts=use_root_shortcut,
                     prev_root=self._w_root,
                     return_root=True,
                     should_stop=self._interrupt_chunk.is_set,

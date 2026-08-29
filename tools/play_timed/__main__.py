@@ -44,7 +44,7 @@ _SRC_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", "src"))
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from extinction_chess import Color, PieceType, Position  # noqa: E402
+from extinction_chess import Color, ExtinctionChess, PieceType, Position  # noqa: E402
 
 # Reuse the board renderer from positional_eval — it's stateless.
 from tools.positional_eval.board_widget import BoardWidget  # noqa: E402
@@ -59,8 +59,8 @@ from .state import (  # noqa: E402
 
 
 # ── Layout ──────────────────────────────────────────────────────────────────
-SCREEN_W = 1200
-SCREEN_H = 800
+SCREEN_W = 1500
+SCREEN_H = 900
 BANNER_H = 60
 BOARD_SIZE = 560
 BOARD_X = 20
@@ -68,6 +68,9 @@ BOARD_Y = BANNER_H + 20
 SIDE_X = BOARD_X + BOARD_SIZE + 30
 SIDE_Y = BANNER_H + 20
 SIDE_W = SCREEN_W - SIDE_X - 20
+# Review mode splits the side panel into two columns (analysis / history).
+REVIEW_COL_GAP = 20
+REVIEW_TOP_MOVES_LIMIT = 40  # cap after skipping zero-visit rows
 
 
 # ── Small position wrapper (avoids typing PositionState here) ───────────────
@@ -150,7 +153,11 @@ class TimedMatchApp:
 
         # Engine (loads the model). Uses CPU — laptop; matches the user-
         # reported ~10 sims/sec figure. Change to "cuda" if you have one.
-        self.engine = Engine(settings["model_path"], device="cpu")
+        # tactical_level from startup: off / basic / advanced.
+        self.engine = Engine(
+            settings["model_path"], device="cpu",
+            tactical_level=settings.get("tactical_level", "basic"),
+        )
 
         # Warmup measures sims/sec on the starting position. Do this
         # BEFORE we call state.start() so the clock isn't running yet.
@@ -159,8 +166,11 @@ class TimedMatchApp:
         # UI state
         self.selected_square: Optional[Position] = None
         self.legal_targets: set = set()
+        import torch
+        _threads = torch.get_num_threads()
         self.status_message = (f"Model loaded (iter {self.engine.iteration}), "
-                               f"{self.engine.sims_per_second:.1f} sims/sec measured. "
+                               f"{self.engine.sims_per_second:.1f} sims/sec measured "
+                               f"({_threads} PyTorch threads). "
                                f"Good luck.")
         self.promotion_pending: Optional[Tuple[Position, Position]] = None
         self.new_game_button = pygame.Rect(0, 0, 0, 0)
@@ -183,6 +193,23 @@ class TimedMatchApp:
         self._review_next_button = pygame.Rect(0, 0, 0, 0)
         self._review_history_rects: List[Tuple[int, pygame.Rect]] = []
 
+        # Scroll state for the review-mode columns. Each is the number of
+        # rows scrolled down from the top of that column's list. The draw
+        # code clamps to [0, max_rows - visible_rows] on each frame.
+        # Analysis resets whenever the reviewed ply changes (each move has
+        # its own top-moves list); history retains its scroll so the user
+        # doesn't get yanked back when clicking a nearby move.
+        self._analysis_scroll: int = 0
+        self._history_scroll: int = 0
+        # Hit-test rects updated each draw (so MOUSEWHEEL events can figure
+        # out which column the wheel was over).
+        self._analysis_scroll_rect = pygame.Rect(0, 0, 0, 0)
+        self._history_scroll_rect = pygame.Rect(0, 0, 0, 0)
+        # Max scroll (rows) for each column — cached from last draw so the
+        # wheel handler can clamp without redrawing.
+        self._analysis_scroll_max: int = 0
+        self._history_scroll_max: int = 0
+
         # Kick off the match: start pondering from the initial position.
         self.engine.start_from(self.state.game)
         self.state.start()
@@ -203,6 +230,8 @@ class TimedMatchApp:
                     return False
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_click(event.pos)
+                if event.type == pygame.MOUSEWHEEL and self._review_index is not None:
+                    self._handle_wheel(event.y)
                 if event.type == pygame.KEYDOWN and self._review_index is not None:
                     if event.key == pygame.K_LEFT:
                         self._navigate_review(-1)
@@ -420,9 +449,29 @@ class TimedMatchApp:
         # Reconstruct the position and cache it. Cheap for extinction chess
         # (game lengths are ~40 moves).
         self._review_game = self.state.reconstruct_at(idx)
+        # Reset the analysis-column scroll to the top — the top-moves list
+        # belongs to this ply, not the previous one.
+        self._analysis_scroll = 0
         # Clear per-position UI state so it doesn't leak from play mode.
         self.selected_square = None
         self.legal_targets = set()
+
+    def _handle_wheel(self, wheel_y: int) -> None:
+        """Route mouse-wheel scroll to whichever review column the pointer
+        is over. wheel_y > 0 means the wheel rolled UP (content scrolls up).
+        Positive scroll offset = content moves up (later rows come into view)."""
+        mx, my = pygame.mouse.get_pos()
+        # Wheel-up is intuitively "look at earlier rows" → decrement offset.
+        # Some laptops send |wheel_y| > 1 for a fast flick; step by that amount.
+        delta = -int(wheel_y)
+        if self._analysis_scroll_rect.collidepoint(mx, my):
+            self._analysis_scroll = max(
+                0, min(self._analysis_scroll_max,
+                       self._analysis_scroll + delta))
+        elif self._history_scroll_rect.collidepoint(mx, my):
+            self._history_scroll = max(
+                0, min(self._history_scroll_max,
+                       self._history_scroll + delta))
 
     def _navigate_review(self, delta: int) -> None:
         if self._review_index is None:
@@ -444,17 +493,122 @@ class TimedMatchApp:
                 self.status_message = ("Model has no result yet — waiting…")
                 self._model_move_deadline = time.monotonic() + 1.0
                 return
-        move = result["move"]
-        snap = result.get("search_snapshot")
+        mcts_best = result["move"]
+        snap = result.get("search_snapshot") or {}
+
+        # Advanced-shortcut post-filter: if MCTS wants to play something
+        # that hangs mate-in-1 AND a safe alternative exists, prefer safe.
+        # Silent no-op in basic/off modes.
+        move, override_reason = self._apply_advanced_shortcut(mcts_best, snap)
+        if override_reason:
+            snap = dict(snap)  # don't mutate the engine's snapshot object
+            snap["override_reason"] = override_reason
+            snap["mcts_best_move"] = {
+                "from": [mcts_best.from_pos.rank, mcts_best.from_pos.file],
+                "to":   [mcts_best.to_pos.rank, mcts_best.to_pos.file],
+                "promotion": (mcts_best.promotion.value
+                              if mcts_best.promotion else None),
+            }
+
         applied = self.state.apply_move(move, search_snapshot=snap)
         if applied:
             sim_count = snap.get("sim_count", 0) if snap else 0
-            self.status_message = (
-                f"Model played {_move_str(move)} "
-                f"({sim_count} sims accumulated).")
+            if override_reason:
+                self.status_message = (
+                    f"Model played {_move_str(move)} — advanced shortcut "
+                    f"overrode MCTS's {_move_str(mcts_best)} "
+                    f"({sim_count} sims accumulated).")
+            else:
+                self.status_message = (
+                    f"Model played {_move_str(move)} "
+                    f"({sim_count} sims accumulated).")
             # Engine descends into its own move so it can start pondering
             # from the new position (waiting for the user's move).
             self.engine.descend(move)
+
+    # ── Advanced (depth-2) shortcut helpers ──────────────────────────────
+
+    def _copy_game(self, game):
+        """Cheap game-state snapshot for one-ply lookahead. Mirrors the
+        pattern used elsewhere (bench_vs_tactical, engine._snapshot_game)."""
+        gc = ExtinctionChess()
+        gc.board = game.board.copy()
+        gc.current_player = game.current_player
+        gc.game_over = game.game_over
+        if hasattr(game, "winner"):
+            gc.winner = game.winner
+        return gc
+
+    def _hangs_opponent_mate_in_one(self, move) -> bool:
+        """After playing `move`, does the opponent have a legal reply that
+        immediately wins by extinction? Returns True if yes."""
+        game = self.state.game
+        mover = game.current_player
+        gc = self._copy_game(game)
+        if not gc.make_move(move):
+            return False
+        if gc.game_over:
+            # Move terminates the game. If it's a win for us, we're fine —
+            # but that case is caught by the basic shortcut inside MCTS,
+            # not by this filter. If it's a loss (extinction against us),
+            # it does technically "hang" — but there's no defense so the
+            # filter has nothing better to offer. Return False so caller
+            # doesn't try to override.
+            return False
+        opp = gc.current_player
+        for opp_move in gc.get_legal_moves():
+            gc2 = self._copy_game(gc)
+            if gc2.make_move(opp_move) and gc2.game_over and gc2.winner == opp:
+                return True
+        return False
+
+    def _match_snap_entry(self, entry) -> Optional["Move"]:
+        """Find a currently-legal Move object matching a top_moves snap
+        entry (dict with from/to/promotion). Returns None if no match."""
+        from_r, from_f = entry.get("from", [None, None])
+        to_r, to_f = entry.get("to", [None, None])
+        promo = entry.get("promotion")
+        for m in self.state.game.get_legal_moves():
+            if (m.from_pos.rank == from_r and m.from_pos.file == from_f
+                    and m.to_pos.rank == to_r and m.to_pos.file == to_f
+                    and (m.promotion.value if m.promotion else None) == promo):
+                return m
+        return None
+
+    def _same_move(self, a, b) -> bool:
+        return (a.from_pos.rank == b.from_pos.rank
+                and a.from_pos.file == b.from_pos.file
+                and a.to_pos.rank == b.to_pos.rank
+                and a.to_pos.file == b.to_pos.file
+                and a.promotion == b.promotion)
+
+    def _apply_advanced_shortcut(self, best_move, snap):
+        """When tactical_level == 'advanced' and MCTS's top pick hangs
+        mate-in-1, walk the top_moves list in visit-count order and pick
+        the highest-visited safe alternative.
+
+        Returns (final_move, override_reason). override_reason is None
+        when no override happened. Callers can pass any snap dict — this
+        function is a silent no-op unless the engine is in 'advanced' mode.
+        """
+        if self.engine.tactical_level != "advanced":
+            return best_move, None
+        if not self._hangs_opponent_mate_in_one(best_move):
+            return best_move, None
+        # MCTS's top pick hangs mate. Look for a safe alternative.
+        for entry in snap.get("top_moves", []):
+            candidate = self._match_snap_entry(entry)
+            if candidate is None:
+                continue
+            if self._same_move(candidate, best_move):
+                continue
+            if not self._hangs_opponent_mate_in_one(candidate):
+                return candidate, (
+                    f"MCTS's top pick {_move_str(best_move)} hangs "
+                    f"mate-in-1; overrode to safe alternative "
+                    f"{_move_str(candidate)}")
+        # No safe alternative — loss unavoidable, play the original.
+        return best_move, None
 
     # ── Drawing ───────────────────────────────────────────────────────────
 
@@ -575,24 +729,36 @@ class TimedMatchApp:
         self._draw_history(SIDE_X + 12, hist_y, panel.right - SIDE_X - 24, hist_h)
 
     def _draw_review_panel(self, panel: pygame.Rect) -> None:
-        """Post-game review side panel: navigation, snapshot info, clickable history."""
-        pad = 12
-        cx = SIDE_X + pad
-        cy = SIDE_Y + pad
-        width = panel.right - SIDE_X - pad * 2
+        """Post-game review side panel: two columns.
 
-        # Header: "Review: move X of Y" + prev/next buttons
+        Left column: navigation header + prev/next + reconstructed clocks +
+        search snapshot (top-N MCTS moves at the reviewed ply).
+        Right column: clickable move history.
+        """
+        pad = 12
+        total_w = panel.right - SIDE_X - pad * 2
+        left_w = (total_w - REVIEW_COL_GAP) // 2
+        right_w = total_w - left_w - REVIEW_COL_GAP
+        left_x = SIDE_X + pad
+        right_x = left_x + left_w + REVIEW_COL_GAP
+        top_y = SIDE_Y + pad
+        hist_bottom = panel.bottom - 60  # leave room for New Game button
+
+        # ── LEFT COLUMN: header + nav + clocks + snapshot ──────────────────
+        cy = top_y
+
         n = len(self.state.moves)
-        cur = self._review_index + 1  # 1-indexed for display; 0 means initial
-        header = f"Review: move {cur}/{n}" if cur > 0 else f"Review: initial position (of {n})"
+        cur = self._review_index + 1
+        header = (f"Review: move {cur}/{n}" if cur > 0
+                  else f"Review: initial position (of {n})")
         header_surf = self.font_label.render(header, True, (30, 30, 60))
-        self.screen.blit(header_surf, (cx, cy))
+        self.screen.blit(header_surf, (left_x, cy))
         cy += 24
 
         # Prev / Next buttons
         btn_w = 88
-        prev_rect = pygame.Rect(cx, cy, btn_w, 26)
-        next_rect = pygame.Rect(cx + btn_w + 8, cy, btn_w, 26)
+        prev_rect = pygame.Rect(left_x, cy, btn_w, 26)
+        next_rect = pygame.Rect(left_x + btn_w + 8, cy, btn_w, 26)
         self._review_prev_button = prev_rect
         self._review_next_button = next_rect
         for rect, txt, enabled in [
@@ -607,25 +773,31 @@ class TimedMatchApp:
             self.screen.blit(surf, surf.get_rect(center=rect.center))
         cy += 34
 
-        # Reconstructed clocks at this position
         user_t, model_t = self.state.clocks_at(self._review_index)
         clk = self.font_row.render(
             f"Model: {_fmt_clock(model_t)}   You: {_fmt_clock(user_t)}",
             True, (60, 60, 90))
-        self.screen.blit(clk, (cx, cy))
+        self.screen.blit(clk, (left_x, cy))
         cy += 20
 
-        # Search snapshot (only for model moves; user moves have no snapshot).
-        cy = self._draw_snapshot_block(cx, cy, width)
+        # Snapshot block gets the full available height in the left column
+        # for the top-moves table (limit to REVIEW_TOP_MOVES_LIMIT rows or
+        # what fits, whichever is smaller).
+        self._draw_snapshot_block(left_x, cy, left_w,
+                                  max_bottom=hist_bottom)
 
-        # Clickable move history (rest of panel above New Game button).
-        hist_bottom = panel.bottom - 60
-        self._draw_review_history(cx, cy + 4, width, hist_bottom - cy - 4)
+        # ── RIGHT COLUMN: clickable move history ──────────────────────────
+        self._draw_review_history(right_x, top_y, right_w, hist_bottom - top_y)
 
-    def _draw_snapshot_block(self, cx: int, cy: int, width: int) -> int:
+    def _draw_snapshot_block(self, cx: int, cy: int, width: int,
+                             max_bottom: Optional[int] = None) -> int:
         """Render the search snapshot for the currently-reviewed move.
         Returns the y-coordinate just below the snapshot (for the next
-        widget to place itself). Returns cy unchanged if nothing to show."""
+        widget to place itself). Returns cy unchanged if nothing to show.
+
+        max_bottom: optional y-coordinate ceiling. If given, top-moves table
+        is capped to whatever fits above max_bottom (still filtered to
+        non-zero-visit rows, then trimmed to fit)."""
         idx = self._review_index
         if idx < 0 or idx >= len(self.state.moves):
             # Initial position — no snapshot.
@@ -671,17 +843,68 @@ class TimedMatchApp:
         self.screen.blit(info, (cx, cy))
         cy += 20
 
-        # Top moves table
-        top_moves = snap.get("top_moves", [])[:8]  # show up to 8
-        for tm in top_moves:
-            m_str = self._snapshot_move_str(tm)
-            visits = tm.get("visits", 0)
-            prob = tm.get("prob", 0.0) * 100
-            line = f"  {m_str:<10s} {visits:>4d}  {prob:>5.1f}%"
-            surf = self.font_row.render(line, True, (30, 30, 30))
-            self.screen.blit(surf, (cx, cy))
+        # If the advanced shortcut overrode MCTS's top pick, surface it.
+        override = snap.get("override_reason")
+        if override:
+            note = self.font_row.render(
+                "* advanced shortcut overrode MCTS top pick",
+                True, (140, 60, 20))
+            self.screen.blit(note, (cx, cy))
             cy += 16
-        return cy + 4
+
+        # Top moves table: skip zero-visit rows (uninformative). Scrollable
+        # via mouse wheel — see _handle_wheel. Rows overflowing the column
+        # are clipped rather than truncated.
+        row_h = 16
+        top_moves = [tm for tm in snap.get("top_moves", [])
+                     if tm.get("visits", 0) > 0]
+        # Total non-zero rows to potentially display.
+        n_rows = len(top_moves)
+        # How many rows fit in the visible area above max_bottom.
+        if max_bottom is not None:
+            visible_rows = max(0, (max_bottom - cy) // row_h)
+        else:
+            visible_rows = n_rows
+        # Clamp scroll to a legal range (also used by the wheel handler).
+        self._analysis_scroll_max = max(0, n_rows - visible_rows)
+        self._analysis_scroll = max(
+            0, min(self._analysis_scroll_max, self._analysis_scroll))
+        # Clip so rows can't spill below max_bottom.
+        clip_bottom = max_bottom if max_bottom is not None else cy + n_rows * row_h
+        clip_rect = pygame.Rect(cx, cy, width, clip_bottom - cy)
+        self.screen.set_clip(clip_rect)
+        try:
+            visible_start = self._analysis_scroll
+            visible_end = min(n_rows, visible_start + visible_rows + 1)
+            for i, tm in enumerate(top_moves[visible_start:visible_end],
+                                   start=visible_start):
+                m_str = self._snapshot_move_str(tm)
+                visits = tm.get("visits", 0)
+                prob = tm.get("prob", 0.0) * 100
+                line = f"  {m_str:<10s} {visits:>5d}  {prob:>5.1f}%"
+                surf = self.font_row.render(line, True, (30, 30, 30))
+                row_y = cy + (i - visible_start) * row_h
+                self.screen.blit(surf, (cx, row_y))
+        finally:
+            self.screen.set_clip(None)
+        # Save the hit-test rect for wheel routing.
+        self._analysis_scroll_rect = clip_rect
+        # Scroll indicators when there's overflow.
+        if self._analysis_scroll > 0:
+            self._draw_scroll_arrow(cx + width - 20, cy + 2, up=True)
+        if self._analysis_scroll < self._analysis_scroll_max:
+            self._draw_scroll_arrow(cx + width - 20, clip_bottom - 12, up=False)
+        return clip_bottom + 4
+
+    def _draw_scroll_arrow(self, x: int, y: int, up: bool) -> None:
+        """Tiny triangle to hint that a scrollable list has more content."""
+        color = (140, 140, 150)
+        if up:
+            pygame.draw.polygon(self.screen, color,
+                                [(x, y + 8), (x + 8, y + 8), (x + 4, y)])
+        else:
+            pygame.draw.polygon(self.screen, color,
+                                [(x, y), (x + 8, y), (x + 4, y + 8)])
 
     def _snapshot_move_str(self, tm: dict) -> str:
         """Render a top-move dict (from search_snapshot) as 'e2-e4' etc."""
@@ -696,32 +919,60 @@ class TimedMatchApp:
 
     def _draw_review_history(self, x: int, y: int, w: int, h: int) -> None:
         """Clickable move history. Populates self._review_history_rects
-        with (ply_index, rect) pairs for click detection."""
+        with (ply_index, rect) pairs for click detection. Scrollable via
+        mouse wheel — the whole list is one scrollable column, clipped to
+        (x, y+title_h, w, h-title_h)."""
         title = self.font_label.render("Move history", True, (60, 60, 90))
         self.screen.blit(title, (x, y))
 
-        row_y = y + 20
         row_h = 16
-        n_visible = max(1, (h - 20) // row_h)
+        title_h = 20
+        list_top = y + title_h
+        list_bottom = y + h
+        visible_rows = max(1, (list_bottom - list_top) // row_h)
 
-        # Show a window of moves centered around the current review index.
         moves = self.state.moves
-        cur = max(0, self._review_index)  # clamp -1 → 0 for windowing
-        start = max(0, min(len(moves) - n_visible, cur - n_visible // 2))
-        end = min(len(moves), start + n_visible)
+        n_rows = len(moves)
+        self._history_scroll_max = max(0, n_rows - visible_rows)
+        # Auto-scroll to keep the currently-reviewed ply visible: only nudge
+        # the scroll if it would fall outside the visible window. This
+        # preserves manual scroll intent for reviewers browsing the game
+        # linearly, while still snapping back into range if they jump far.
+        cur = max(0, self._review_index)
+        if cur < self._history_scroll:
+            self._history_scroll = cur
+        elif cur >= self._history_scroll + visible_rows:
+            self._history_scroll = cur - visible_rows + 1
+        self._history_scroll = max(
+            0, min(self._history_scroll_max, self._history_scroll))
 
-        self._review_history_rects = []
-        for i, rec in enumerate(moves[start:end], start=start):
-            side_letter = "W" if rec.side == Color.WHITE else "B"
-            selected = (i == self._review_index)
-            rect = pygame.Rect(x, row_y + (i - start) * row_h, w, row_h - 1)
-            if selected:
-                pygame.draw.rect(self.screen, (255, 245, 200), rect)
-            self._review_history_rects.append((i, rect))
-            text = f"{i + 1:>3}. {side_letter} {_move_str(rec.move)}"
-            fg = (10, 10, 60) if selected else (30, 30, 30)
-            surf = self.font_row.render(text, True, fg)
-            self.screen.blit(surf, (x + 4, row_y + (i - start) * row_h))
+        clip_rect = pygame.Rect(x, list_top, w, list_bottom - list_top)
+        self.screen.set_clip(clip_rect)
+        try:
+            start = self._history_scroll
+            end = min(n_rows, start + visible_rows + 1)
+            self._review_history_rects = []
+            for i, rec in enumerate(moves[start:end], start=start):
+                side_letter = "W" if rec.side == Color.WHITE else "B"
+                selected = (i == self._review_index)
+                row_y = list_top + (i - start) * row_h
+                rect = pygame.Rect(x, row_y, w, row_h - 1)
+                if selected:
+                    pygame.draw.rect(self.screen, (255, 245, 200), rect)
+                self._review_history_rects.append((i, rect))
+                text = f"{i + 1:>3}. {side_letter} {_move_str(rec.move)}"
+                fg = (10, 10, 60) if selected else (30, 30, 30)
+                surf = self.font_row.render(text, True, fg)
+                self.screen.blit(surf, (x + 4, row_y))
+        finally:
+            self.screen.set_clip(None)
+        # Save hit-test rect for wheel routing.
+        self._history_scroll_rect = clip_rect
+        # Scroll indicators.
+        if self._history_scroll > 0:
+            self._draw_scroll_arrow(x + w - 20, list_top + 2, up=True)
+        if self._history_scroll < self._history_scroll_max:
+            self._draw_scroll_arrow(x + w - 20, list_bottom - 12, up=False)
 
     def _draw_clock_block(self, x: int, y: int, label: str,
                           seconds: float, ticking: bool) -> None:
@@ -794,6 +1045,7 @@ def main() -> None:
         "default_your_inc": 3,
         "default_model_min": 5,
         "default_model_inc": 3,
+        "default_tactical_level": "basic",
     }
 
     while True:
@@ -810,6 +1062,7 @@ def main() -> None:
             "default_your_inc": settings["user_increment_seconds"],
             "default_model_min": settings["model_base_seconds"] // 60,
             "default_model_inc": settings["model_increment_seconds"],
+            "default_tactical_level": settings.get("tactical_level", "basic"),
         }
 
         app = TimedMatchApp(settings)

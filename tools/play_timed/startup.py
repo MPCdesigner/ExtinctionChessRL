@@ -38,6 +38,7 @@ def show_startup_dialog(
     default_your_inc: int = 3,
     default_model_min: int = 5,
     default_model_inc: int = 3,
+    default_tactical_level: str = "basic",
 ) -> Optional[Dict]:
     """Show the modal startup dialog. Returns settings dict or None.
 
@@ -49,7 +50,20 @@ def show_startup_dialog(
           "user_increment_seconds": int,
           "model_base_seconds": int,
           "model_increment_seconds": int,
+          "tactical_level": "off" | "basic" | "advanced",
         }
+
+    tactical_level explanation:
+      off       — no forced shortcuts. Model must find mate-in-1 through
+                  its value head + MCTS visits like any other move.
+      basic     — force mate-in-1 (extinction-in-1) if available. Same as
+                  training. Distributes root sims across all winning moves.
+      advanced  — basic + loss avoidance. If MCTS's top pick would give
+                  the opponent a mate-in-1 reply AND a move exists that
+                  doesn't, prefer the safe one (highest-visited such move).
+                  Was the training-time shortcut pre-iter-101; removed to
+                  force the value head to learn "don't step here". OK to
+                  re-enable during inference — no gradient at play time.
 
     All defaults are used to PRE-FILL the dialog when it opens — this is
     what the "New Game" button uses to restart with the same settings.
@@ -139,9 +153,30 @@ def show_startup_dialog(
                    command=lambda m=mins, s=secs: apply_preset(m, s)).grid(
             row=0, column=i + 1, padx=2)
 
+    # ── Tactical shortcuts ─────────────────────────────────────────────
+    tactical_var = tk.StringVar(value=default_tactical_level)
+    tactical_frame = ttk.LabelFrame(root, text="Tactical shortcuts", padding=10)
+    tactical_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=5,
+                        sticky="ew")
+    ttk.Radiobutton(
+        tactical_frame,
+        text="Off — model must find mate-in-1 via MCTS",
+        variable=tactical_var, value="off",
+    ).grid(row=0, column=0, sticky="w")
+    ttk.Radiobutton(
+        tactical_frame,
+        text="Basic — force mate-in-1 (same as training)",
+        variable=tactical_var, value="basic",
+    ).grid(row=1, column=0, sticky="w")
+    ttk.Radiobutton(
+        tactical_frame,
+        text="Advanced — basic + avoid opponent mate-in-1 (depth 2)",
+        variable=tactical_var, value="advanced",
+    ).grid(row=2, column=0, sticky="w")
+
     # ── Start / cancel ─────────────────────────────────────────────────
     button_frame = ttk.Frame(root)
-    button_frame.grid(row=2, column=0, columnspan=2, pady=(10, 10))
+    button_frame.grid(row=3, column=0, columnspan=2, pady=(10, 10))
 
     def on_start():
         result.update({
@@ -151,6 +186,7 @@ def show_startup_dialog(
             "user_increment_seconds": int(your_inc_var.get()),
             "model_base_seconds": int(model_base_var.get()) * 60,
             "model_increment_seconds": int(model_inc_var.get()),
+            "tactical_level": tactical_var.get(),
         })
         root.destroy()
 
