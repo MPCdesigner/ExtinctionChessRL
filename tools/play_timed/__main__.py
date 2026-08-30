@@ -72,6 +72,14 @@ SIDE_W = SCREEN_W - SIDE_X - 20
 REVIEW_COL_GAP = 20
 REVIEW_TOP_MOVES_LIMIT = 40  # cap after skipping zero-visit rows
 
+# Early-play threshold — if the engine's tree already has this many sims
+# on the current root (from ponder + on-clock work), play immediately
+# without burning the rest of the time budget. Matches training's per-move
+# sim count so we play at "training-equivalent thinking depth" and save
+# time for later moves. Realistic engines behave this way — obvious
+# positions decide instantly, critical ones use the saved time.
+EARLY_PLAY_SIM_THRESHOLD = 800
+
 
 # ── Small position wrapper (avoids typing PositionState here) ───────────────
 
@@ -182,6 +190,10 @@ class TimedMatchApp:
         # None means "no deadline set yet" (either user's turn or we already
         # played the model's move for this turn).
         self._model_move_deadline: Optional[float] = None
+        # Set by the run() loop when the early-play sim threshold fires
+        # (rather than the deadline). Read by _apply_model_move for the
+        # status message. Not persisted anywhere else.
+        self._model_move_triggered_by_threshold: bool = False
 
         # Phase 3 review state — None during play, int in [-1, len(moves)-1]
         # during review (game over). -1 = initial position, N = after move N.
@@ -256,18 +268,29 @@ class TimedMatchApp:
             # 1. When it becomes model's turn: set a deadline based on
             #    time budget. Engine has already been pondering during
             #    user's turn.
-            # 2. Every frame after that: if deadline has passed, take
-            #    the current best move from engine and play it.
+            # 2. Every frame after that, play the move as soon as
+            #    EITHER the deadline expires OR the tree has hit the
+            #    early-play sim threshold (EARLY_PLAY_SIM_THRESHOLD).
+            #    The threshold check saves time when the ponder tree
+            #    already has training-equivalent depth; that time
+            #    banks for critical positions later in the game.
             if (self.state.is_ongoing() and self.state.is_model_turn()):
                 if self._model_move_deadline is None:
                     budget_sec = self.state.model_thinking_budget_seconds()
                     self._model_move_deadline = time.monotonic() + budget_sec
                     self.status_message = (
-                        f"Model thinking (budget ≈ {budget_sec:.1f}s, "
-                        f"pondering during your turn adds to this)…")
-                elif time.monotonic() >= self._model_move_deadline:
-                    self._apply_model_move()
-                    self._model_move_deadline = None
+                        f"Model thinking (budget ≈ {budget_sec:.2f}s, "
+                        f"early-play at {EARLY_PLAY_SIM_THRESHOLD} sims)…")
+                else:
+                    deadline_hit = time.monotonic() >= self._model_move_deadline
+                    tree_sims = self.engine.get_status_snapshot().get("sim_count", 0)
+                    threshold_hit = tree_sims >= EARLY_PLAY_SIM_THRESHOLD
+                    if deadline_hit or threshold_hit:
+                        # Note WHY we played (for status message + review clarity).
+                        self._model_move_triggered_by_threshold = (
+                            threshold_hit and not deadline_hit)
+                        self._apply_model_move()
+                        self._model_move_deadline = None
 
             # If we transitioned to game-over during the model's think,
             # clear the deadline so we don't retry.
@@ -484,14 +507,21 @@ class TimedMatchApp:
         """Pull the model's current best move from the ponder tree and play it."""
         result = self.engine.get_current_result()
         if result is None or result.get("move") is None:
-            # Engine had no result yet — rare, but can happen if the position
-            # has extremely few legal moves + the ponder chunk hasn't run.
-            # Give it a tiny bit more time.
-            time.sleep(0.1)
+            # Engine had no result yet — happens when descent produced no
+            # reusable subtree AND the first post-descent chunk hasn't
+            # finished yet. Wait a short interval, then retry. Retry
+            # window scales down when we're in time trouble — no point
+            # blowing our whole remaining clock on a hard-coded 1s wait.
+            time.sleep(0.05)
             result = self.engine.get_current_result()
             if result is None or result.get("move") is None:
-                self.status_message = ("Model has no result yet — waiting…")
-                self._model_move_deadline = time.monotonic() + 1.0
+                remaining = self.state.model_clock_display()
+                # Cap retry at 30% of remaining, min 0.05s, max 1.0s.
+                retry_delay = max(0.05, min(1.0, remaining * 0.3))
+                self.status_message = (
+                    f"Model waiting for first sim… "
+                    f"(retry in {retry_delay:.2f}s, {remaining:.1f}s left)")
+                self._model_move_deadline = time.monotonic() + retry_delay
                 return
         mcts_best = result["move"]
         snap = result.get("search_snapshot") or {}
@@ -513,15 +543,17 @@ class TimedMatchApp:
         applied = self.state.apply_move(move, search_snapshot=snap)
         if applied:
             sim_count = snap.get("sim_count", 0) if snap else 0
+            early = " ★ played early (sim threshold)" if self._model_move_triggered_by_threshold else ""
+            self._model_move_triggered_by_threshold = False  # consumed
             if override_reason:
                 self.status_message = (
                     f"Model played {_move_str(move)} — advanced shortcut "
                     f"overrode MCTS's {_move_str(mcts_best)} "
-                    f"({sim_count} sims accumulated).")
+                    f"({sim_count} sims accumulated).{early}")
             else:
                 self.status_message = (
                     f"Model played {_move_str(move)} "
-                    f"({sim_count} sims accumulated).")
+                    f"({sim_count} sims accumulated).{early}")
             # Engine descends into its own move so it can start pondering
             # from the new position (waiting for the user's move).
             self.engine.descend(move)

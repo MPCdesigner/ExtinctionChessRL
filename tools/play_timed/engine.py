@@ -54,7 +54,7 @@ except Exception:
     # Only fails if already frozen after prior torch use; harmless to skip.
     pass
 
-from extinction_chess import ExtinctionChess, Move  # noqa: E402
+from extinction_chess import Color, ExtinctionChess, Move  # noqa: E402
 from alphazero import (  # noqa: E402
     AlphaZeroNet, AlphaZeroEvaluator, mcts_search,
 )
@@ -386,8 +386,30 @@ class Engine:
                 self._w_game = new_game_copy
                 self._w_root = promoted   # may be None → fresh search next chunk
                 self._w_state = "SEARCHING"
-                # Reset visible state so main doesn't see stale visits.
-                self._publish_result([], 0.0, 0)
+                # Publish immediately so main can read the reused subtree
+                # right away (tree reuse gives us N visits carried over from
+                # previous MCTS — no need to make main wait ~3s for the next
+                # chunk to complete before it sees any result). Only clears
+                # visible state when descent produced NO reusable subtree
+                # (promoted is None, or has no children/visits).
+                if (promoted is not None
+                        and promoted.is_expanded
+                        and promoted.children
+                        and promoted.visit_count > 0):
+                    visits = [(ch.move, ch.visit_count)
+                              for ch in promoted.children]
+                    # root value from promoted node, in mover's perspective
+                    if promoted.visit_count > 0:
+                        white_q = promoted.value_sum / promoted.visit_count
+                        current = new_game_copy.current_player
+                        root_val = (white_q if current == Color.WHITE
+                                    else -white_q)
+                    else:
+                        root_val = 0.0
+                    self._publish_result(visits, root_val,
+                                         promoted.visit_count)
+                else:
+                    self._publish_result([], 0.0, 0)
             elif kind == "stop":
                 self._w_state = "IDLE"
                 self._w_root = None

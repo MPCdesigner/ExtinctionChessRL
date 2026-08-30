@@ -310,16 +310,34 @@ class MatchState:
     def model_thinking_budget_seconds(self) -> float:
         """Time management: what should the model spend on this move?
 
-        Simple heuristic: `remaining / 30 + increment`, capped at 30 sec.
-        30 ≈ expected moves remaining in extinction chess (games are
-        typically 30-50 moves in the training data). Adaptive to game
-        phase implicitly: each move you play, remaining/30 shrinks
-        proportionally, so you don't burn time you don't have.
-
-        Minimum: 1 second (safety floor — some sims are better than none).
+        Heuristic: `remaining / expected_moves_left + increment`, with:
+          - Ceiling scaling to time control (never > 30s on short games;
+            longer games get proportionally more headroom)
+          - Safety guard when time is critically low (never risk more
+            than 30% of remaining on a single move once <10s left)
+          - NO artificial floor — with pondering + tree reuse, the
+            model can play near-instantly from an accumulated tree.
+            Trust the base formula. Very low budgets (e.g., 0.1s)
+            still let the engine return a move from its ponder tree.
+            Floor removed Aug 30 — previously 1.0s, which caused
+            certain-flag scenarios in sudden-death time controls.
         """
         if not self.is_model_turn():
             return 0.0
         remaining = self.model_clock_display()
-        budget = remaining / 30.0 + self.model_tc.increment_seconds
-        return max(1.0, min(30.0, budget))
+
+        # Base: expected 30 moves left.
+        base_budget = remaining / 30.0 + self.model_tc.increment_seconds
+
+        # Ceiling scales with time control: quarter of base clock, floor 30s
+        # so blitz still caps at 30s but rapid/classical get proportional
+        # headroom. A 20-min game caps at 5 min, a 3-min game caps at 30s.
+        hard_cap = max(30.0, self.model_tc.base_seconds / 4.0)
+        budget = min(base_budget, hard_cap)
+
+        # Time-trouble safety: never risk more than 30% of remaining if
+        # low on time. A 5s clock burning 5s on one move flags us next.
+        if remaining < 10.0:
+            budget = min(budget, remaining * 0.3)
+
+        return budget
