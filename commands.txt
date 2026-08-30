@@ -695,6 +695,101 @@ unaffected — but if you fully back out play_timed, revert 964f582 too
 to keep BoardWidget minimal.
 
 
+== CUDA OOM MITIGATION (Aug 30 2026) ==
+
+┌─ STATUS ────────────────────────────────────────────────────────────────┐
+│ First observed: iter 1028 (job 602357). CRASH during training step.     │
+│ Root cause: PyTorch CUDA allocator fragmentation on long-running jobs.  │
+│ Fix: env var in train.sh + helper.sh (no code SCP required).           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ Symptom ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate
+  N.XX GiB. GPU 0 has a total capacity of 10.57 GiB of which YY MiB is
+  free. Including non-PyTorch memory, this process has X.XX GiB memory
+  in use. Of the allocated memory X.XX GiB is allocated by PyTorch, and
+  X.XX GiB is reserved by PyTorch but unallocated. If reserved but
+  unallocated memory is large try setting max_split_size_mb to avoid
+  fragmentation.
+
+  Occurred at src/alphazero.py:2108 (the pi_target = torch.tensor(...)
+  line) after 3+ iters of continuous training. The "reserved but
+  unallocated" chunk being large is the smoking gun for fragmentation.
+
+━━ Why it happens ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Each training iter allocates a large tensor (~1.5-1.7 GiB for the
+     pi_target: N_positions × 4864 policy classes × 4 bytes).
+  2. Over multiple iters, PyTorch's CUDA allocator fragments the
+     reserved-but-not-currently-allocated memory into small chunks.
+  3. Eventually no single contiguous chunk is large enough for the
+     next allocation, even though total "free + reserved" would fit.
+  4. Position count creep (89-90k vs baseline 86-88k) — probably driven
+     by helper positions per iter running slightly higher recently —
+     pushed us over the fragmentation-usable limit at iter 1028.
+
+━━ Fix: env var in train.sh + helper.sh ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Preferred (PyTorch 2.1+):
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+  Fallback (older PyTorch — try if expandable_segments not recognized):
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb=128
+
+  expandable_segments lets the allocator grow individual segments
+  rather than fragmenting into fixed-size chunks. Solves the exact
+  error we saw with minimal perf cost.
+
+━━ How to apply (from cluster shell) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # 1. Add the export near the top of train.sh (before `python3 ...`).
+  #    Sed one-liner:
+  ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca
+  sed -i '/^python3 /i export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True' \
+    ~/extinction-chess/train.sh
+  # (If train.sh's Python invocation uses a different form like
+  # `srun python3 ...` or `python -u ...`, adjust the sed pattern.
+  # Just verify with: grep -n python ~/extinction-chess/train.sh)
+
+  # 2. Same for helper.sh (helpers don't hit this bug but consistency):
+  sed -i '/^python3 /i export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True' \
+    ~/extinction-chess/helper.sh
+
+  # 3. Verify:
+  grep PYTORCH_CUDA_ALLOC_CONF ~/extinction-chess/*.sh
+
+  # 4. Effect: next Python process (next auto-resubmit for main; next
+  #    helper sbatch for helpers). Existing running processes keep
+  #    their old allocator config until they exit.
+
+━━ Diagnostic: check GPU memory during a run ━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # From cluster shell, watch GPU memory on the node running main:
+  ssh delta-slurm1 nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader
+  # Or watch continuously (2-second refresh):
+  watch -n 2 'ssh delta-slurm1 nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader'
+
+  # If memory.used stays >8 GiB and grows across iters → fragmentation
+  # is accumulating. Time to apply the env var if not already.
+
+━━ Rollback ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Remove the export line from train.sh + helper.sh:
+    sed -i '/PYTORCH_CUDA_ALLOC_CONF/d' ~/extinction-chess/train.sh
+    sed -i '/PYTORCH_CUDA_ALLOC_CONF/d' ~/extinction-chess/helper.sh
+  Effect: next Python start reverts to default allocator behavior.
+
+━━ Escalation if env var isn't enough ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  If crashes persist despite expandable_segments (unlikely but):
+    1. Add torch.cuda.empty_cache() at end of each training/drilling
+       step in alphazero.py. Small perf cost.
+    2. Chunk the pi_target tensor construction — allocate in 10k-
+       position slices and concatenate on-device. Bigger refactor;
+       only worth it if #1 also fails.
+
+
 == HELPER TIMEOUT FIX (Aug 24-26 2026) ==
 
 ┌─ STATUS ────────────────────────────────────────────────────────────────┐
