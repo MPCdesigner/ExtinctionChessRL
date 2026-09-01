@@ -1629,6 +1629,185 @@ Historical values that have NEVER been overridden and match the
 batched_self_play/mcts_search defaults: c_puct, mcts_batch_size (8),
 max_batch (512 for main, matches helper).
 
+━━ MCTS parameters by CONTEXT (training vs benchmarks vs tools) ━━━━━━
+
+Different consumers of mcts_search use DIFFERENT parameter sets. When
+adding a new consumer or interpreting a result, check the table below
+to understand what the model is doing:
+
+  Context                          c_puct  dirichlet_α  noise_weight  tactical  tree_reuse
+  ─────────────────────────────── ─────── ──────────── ─────────────  ────────  ──────────
+  MAIN self-play (run_training)   2.5     2.0          0.75           True      True
+  HELPER self-play (run_helper)   2.5     2.0          0.75           True      True
+  compare_extensive.py            2.5     0.0          0.0            False     False
+  compare_asymmetric.py           2.5     0.0          0.0            False     False
+  bench_vs_tactical.py            2.5     0.0          0.0            False     False
+  bench_win_taking.py             2.5     0.0          0.0            False     False
+  positional_eval (default)       2.5     0.0/0.3/1.0  0.0/…/0.75    False     False
+  timed_match (in engine.py)      2.5     0.0          0.0            varies    True
+
+  Notes:
+   - Benchmarks use dirichlet=0/noise=0 for DETERMINISTIC evaluation —
+     same trained model always plays the same game against a given
+     opponent + position. Reproducibility over exploration.
+   - Benchmarks use tactical_shortcuts=False so tests measure the
+     model's actual value-head knowledge, not the "force mate-in-1"
+     shortcut we use in training.
+   - Benchmarks use tree_reuse=False so each move is a FRESH search
+     at the requested sim count (no accumulated visits from prior
+     moves). Fair comparison at nominal sim budgets.
+   - Timed-match tool's tactical_shortcuts is user-selectable
+     (off/basic/advanced, see startup dialog) since it plays LIVE
+     against a human — different tradeoffs than benchmarking.
+   - positional_eval defaults to dirichlet=0/noise=0 (deterministic
+     eval, matches benchmarks) but exposes all three params in the
+     settings panel for exploration diagnostics.
+
+  Rule of thumb when writing a NEW consumer:
+   - If it's a BENCHMARK (measures model strength) → use benchmark
+     row above. Deterministic + no shortcuts + no reuse.
+   - If it's a DATA GENERATOR (feeds training) → use main-self-play
+     row. Noisy + shortcuts + reuse.
+   - If it's an INTERACTIVE TOOL → match benchmark defaults but
+     expose knobs for user experimentation.
+
+
+== ASYMMETRIC-SIM BENCHMARK (compare_asymmetric.py, Sep 1 2026) ==
+
+┌─ WHAT IT IS ────────────────────────────────────────────────────────────┐
+│ A benchmark that pits two models against each other at DIFFERENT sim   │
+│ counts per side. Motivation: measure whether an older model, when      │
+│ given a depth advantage, can outperform a newer model.                  │
+│                                                                         │
+│ Signal-generating question: how much MCTS depth does an older model    │
+│ need to overcome the newer model's improved policy prior? A large      │
+│ answer means the newer model has captured a lot of "compression" —      │
+│ its policy is genuinely better. A small (or negative) answer means     │
+│ the newer model is only marginally better and depth-augmented older    │
+│ models still have useful knowledge to distill.                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ Usage ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Basic usage: compare newer (--m1, less sims) vs older (--m2, more sims)
+  python3 compare_asymmetric.py --m1 az_iter_1020_100pct.pt \
+                                --m2 az_iter_970_100pct.pt \
+                                --device cuda
+
+  # Custom sim pairs (m1_sims,m2_sims per pair)
+  python3 compare_asymmetric.py --m1 az_iter_1020_100pct.pt \
+                                --m2 az_iter_970_100pct.pt \
+                                --sim-pairs 100,200 200,400 400,800
+
+  Default --sim-pairs: (20,50) (50,100) (100,200) (200,400) (400,800)
+  — the standard SIM_OPTIONS shifted up one tier for M2.
+
+━━ SBATCH template (from cluster shell) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 \
+         --mem=16G --time=5:00:00 --nodelist=thor-slurm1 \
+         --output=$HOME/asym_<NEW>_vs_<OLD>_%j.log \
+         --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && \
+                 python3 setup.py build_ext --inplace && \
+                 python3 compare_asymmetric.py \
+                   --m1 az_iter_<NEW>_100pct.pt \
+                   --m2 az_iter_<OLD>_100pct.pt --device cuda"
+
+━━ Output format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Standard "M1 pts / M2 pts / W-D-L" tables per sim pair, plus a final
+INTERPRETATION block that auto-labels each pair:
+  @ 20s vs  50s (2.5x): iter 970 = X.X%  → verdict
+  @ 50s vs 100s (2.0x): iter 970 = X.X%  → verdict
+  ...
+
+Verdict thresholds (per pair, based on iter-970-side (M2) percentage):
+  > 55%: iter 970 STRONGER with Nx depth
+  45-55%: TIE (within ±5% noise floor)
+  < 45%: iter 970 STILL WEAKER even with Nx depth advantage
+
+━━ MCTS params ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Uses BENCHMARK conventions (see MCTS parameters by CONTEXT table above):
+deterministic (dirichlet=0, noise=0), no tactical shortcuts, no tree
+reuse, c_puct=2.5. This gives us clean per-move sim budgets and
+reproducible games.
+
+
+== EXPERT-DATA DISTILLATION (PLANNED — pending compare_asymmetric verdict) ==
+
+┌─ WHAT IT MIGHT BE ──────────────────────────────────────────────────────┐
+│ A new data-augmentation component for training. In parallel with main │
+│ self-play + helpers + terminal drilling, we'd generate games from an  │
+│ older checkpoint at a HIGHER sim count than current, and inject them  │
+│ into the training set. Justification: if a strong-yet-older model     │
+│ with more MCTS depth produces qualitatively better moves than the     │
+│ current model does with standard depth, those moves are "expert"       │
+│ demonstrations the current policy should distill.                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Prior art: KataGo, LC0, and MuZero variants use similar techniques —
+"reference" games from stronger (via depth) opponents get folded into
+the training buffer as high-quality supervision signal.
+
+━━ Design questions to nail down BEFORE implementation ━━━━━━━━━━━━━━━
+
+1. Which checkpoint provides expert data?
+     A. Fixed offset (iter N-10)         — simple, uses recent history
+     B. Fixed absolute (e.g. iter 1020)  — stale over time; would need
+                                           periodic re-anchoring
+     C. Adaptive: strongest historical
+        anchor per benchmark data        — principled but complex
+   Starting recommendation: A (N-10). Matches the checkpoint cadence.
+
+2. How much expert data per iter?
+     A. ~100 games (~25% of main)  — light injection
+     B. ~200 games (matches helper)— matches proven recency multiplier
+     C. ~400 games (matches main)  — dominates the training mix
+   Starting recommendation: B (~200 games).
+
+3. Expert sim count?
+     Depends on compare_asymmetric.py's answer. If iter N-10 with 2x
+     sims (=1600) reliably beats iter N with 800, use 1600 for expert.
+     If we need 3x (=2400), use that. Diminishing returns beyond ~3x.
+
+4. How to inject?
+     Clone helper.sh → expert.sh. Add helper-like handling in
+     alphazero.py (parallel to launch_helper_with_fallback). Consume
+     at training time via a new consume_expert_files() alongside
+     consume_helper_files().
+
+5. Should expert games use tree reuse?
+     YES (matches self-play conventions). This gives them extra
+     effective depth — the reason we're generating them in the first
+     place.
+
+━━ Concerns to address in implementation ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Off-policy: expert data is from a DIFFERENT set of weights than
+  current model. Slightly more off-policy than helpers (which are on
+  the same iter-N-1 model as main). Might cause policy oscillation if
+  weighted too heavily.
+- Compute cost: 1600-sim games take ~2× normal 800-sim games. Adds
+  meaningful GPU-hours per iter.
+- Bootstrap: for iter N < 20, no iter N-10 checkpoint exists. Would
+  need to disable expert data until iter 30+.
+- Interaction with existing helpers: current pipeline is main +
+  helpers (recency multiplier). Adding expert = depth multiplier. Two
+  different augmentation strategies. Might synergize or might overwhelm
+  main's own signal — needs empirical validation.
+
+━━ Path forward ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1: Run compare_asymmetric.py (submitted as job 611940 on Sep 1)
+        to measure the actual advantage of depth-augmented iter 970 vs
+        iter 1020. Verdict determines whether Step 2 makes sense.
+Step 2: If Step 1 shows meaningful advantage → implement expert.sh
+        + alphazero.py hooks. Test on 5 iters with expert data ON,
+        compare loss trajectory + iter-benchmark results vs baseline.
+Step 3: If Step 2 looks good → commit; document as new training
+        component in the "TRAINING PARAMETER CHANGELOG" section.
+
 
 == UPDATING TRAINING HISTORY FILES ==
 
