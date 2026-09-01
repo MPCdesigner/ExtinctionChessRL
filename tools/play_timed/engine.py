@@ -106,7 +106,10 @@ class Engine:
     """
 
     def __init__(self, model_path: str, device: str = "cpu",
-                 tactical_level: str = "basic"):
+                 tactical_level: str = "basic",
+                 c_puct: float = 2.5,
+                 dirichlet_alpha: float = 0.0,
+                 noise_weight: float = 0.0):
         """tactical_level is one of "off", "basic", "advanced":
 
           off       — mcts_search runs with tactical_shortcuts=False. Model
@@ -115,13 +118,19 @@ class Engine:
                       shortcut fires on mate-in-1. Same as training.
           advanced  — same MCTS call as basic; the depth-2 filter is
                       applied post-MCTS at play time by __main__ (see
-                      _apply_advanced_shortcut). Engine itself just
-                      records the level so main can look it up.
+                      _apply_advanced_shortcut).
+
+        c_puct / dirichlet_alpha / noise_weight — pass-through to
+        mcts_search for both warmup and the ponder loop. Defaults match
+        deterministic benchmark conventions (c_puct=2.5, no noise).
         """
         assert tactical_level in ("off", "basic", "advanced"), tactical_level
         self.model_path = model_path
         self.device = torch.device(device)
         self.tactical_level = tactical_level
+        self.c_puct = c_puct
+        self.dirichlet_alpha = dirichlet_alpha
+        self.noise_weight = noise_weight
 
         self.model, meta = AlphaZeroNet.load_checkpoint(model_path, migrate=True)
         self.model = self.model.to(self.device).eval()
@@ -174,11 +183,16 @@ class Engine:
 
         game_copy = self._snapshot_game(game)
         t0 = time.monotonic()
+        # Warmup uses the SAME MCTS knobs the real play loop will use,
+        # so the measured sims/sec is representative for time budgeting.
+        # tactical_shortcuts stays False here regardless — a shortcut
+        # early-exit would falsely inflate the measured rate.
         mcts_search(
             game_copy, self.evaluator,
             num_simulations=sample_sims,
-            dirichlet_alpha=0.0,
-            noise_weight=0.0,
+            c_puct=self.c_puct,
+            dirichlet_alpha=self.dirichlet_alpha,
+            noise_weight=self.noise_weight,
             tactical_shortcuts=False,
         )
         elapsed = max(1e-6, time.monotonic() - t0)
@@ -318,9 +332,9 @@ class Engine:
                 move_visits, root_value, new_root = mcts_search(
                     self._w_game, self.evaluator,
                     num_simulations=target,
-                    c_puct=2.5,
-                    dirichlet_alpha=0.0,
-                    noise_weight=0.0,
+                    c_puct=self.c_puct,
+                    dirichlet_alpha=self.dirichlet_alpha,
+                    noise_weight=self.noise_weight,
                     tactical_shortcuts=use_root_shortcut,
                     prev_root=self._w_root,
                     return_root=True,

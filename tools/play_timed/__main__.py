@@ -72,12 +72,9 @@ SIDE_W = SCREEN_W - SIDE_X - 20
 REVIEW_COL_GAP = 20
 REVIEW_TOP_MOVES_LIMIT = 40  # cap after skipping zero-visit rows
 
-# Early-play threshold — if the engine's tree already has this many sims
-# on the current root (from ponder + on-clock work), play immediately
-# without burning the rest of the time budget. Matches training's per-move
-# sim count so we play at "training-equivalent thinking depth" and save
-# time for later moves. Realistic engines behave this way — obvious
-# positions decide instantly, critical ones use the saved time.
+# Fallback default for sim ceiling if the startup dialog doesn't provide
+# one (older settings dicts). See TimedMatchApp.sim_ceiling — the per-game
+# value comes from the startup dialog.
 EARLY_PLAY_SIM_THRESHOLD = 800
 
 
@@ -152,19 +149,33 @@ class TimedMatchApp:
             flipped=(user_color == Color.BLACK),
         )
 
-        user_tc = TimeControl(settings["user_base_seconds"],
-                              settings["user_increment_seconds"])
-        model_tc = TimeControl(settings["model_base_seconds"],
-                               settings["model_increment_seconds"])
+        user_tc = TimeControl(
+            settings["user_base_seconds"],
+            settings["user_increment_seconds"],
+            settings.get("user_delay_seconds", 0),
+        )
+        model_tc = TimeControl(
+            settings["model_base_seconds"],
+            settings["model_increment_seconds"],
+            settings.get("model_delay_seconds", 0),
+        )
         self.state = MatchState(settings["model_path"], user_color,
                                 user_tc, model_tc)
 
+        # Sim ceiling: play early once the ponder tree hits this many sims,
+        # regardless of remaining time budget. Configurable per game via
+        # startup dialog. Default 800 matches training's per-move sim count.
+        self.sim_ceiling = int(settings.get("sim_ceiling", EARLY_PLAY_SIM_THRESHOLD))
+
         # Engine (loads the model). Uses CPU — laptop; matches the user-
         # reported ~10 sims/sec figure. Change to "cuda" if you have one.
-        # tactical_level from startup: off / basic / advanced.
+        # tactical_level + MCTS knobs from startup.
         self.engine = Engine(
             settings["model_path"], device="cpu",
             tactical_level=settings.get("tactical_level", "basic"),
+            c_puct=float(settings.get("c_puct", 2.5)),
+            dirichlet_alpha=float(settings.get("dirichlet_alpha", 0.0)),
+            noise_weight=float(settings.get("noise_weight", 0.0)),
         )
 
         # Warmup measures sims/sec on the starting position. Do this
@@ -270,8 +281,8 @@ class TimedMatchApp:
             #    user's turn.
             # 2. Every frame after that, play the move as soon as
             #    EITHER the deadline expires OR the tree has hit the
-            #    early-play sim threshold (EARLY_PLAY_SIM_THRESHOLD).
-            #    The threshold check saves time when the ponder tree
+            #    sim ceiling (per-game configurable via startup dialog).
+            #    The ceiling check saves time when the ponder tree
             #    already has training-equivalent depth; that time
             #    banks for critical positions later in the game.
             if (self.state.is_ongoing() and self.state.is_model_turn()):
@@ -280,11 +291,11 @@ class TimedMatchApp:
                     self._model_move_deadline = time.monotonic() + budget_sec
                     self.status_message = (
                         f"Model thinking (budget ≈ {budget_sec:.2f}s, "
-                        f"early-play at {EARLY_PLAY_SIM_THRESHOLD} sims)…")
+                        f"early-play at {self.sim_ceiling} sims)…")
                 else:
                     deadline_hit = time.monotonic() >= self._model_move_deadline
                     tree_sims = self.engine.get_status_snapshot().get("sim_count", 0)
-                    threshold_hit = tree_sims >= EARLY_PLAY_SIM_THRESHOLD
+                    threshold_hit = tree_sims >= self.sim_ceiling
                     if deadline_hit or threshold_hit:
                         # Note WHY we played (for status message + review clarity).
                         self._model_move_triggered_by_threshold = (
@@ -736,6 +747,7 @@ class TimedMatchApp:
             label=f"Model  (iter {self.engine.iteration})  {self.state.model_tc.label()}",
             seconds=self.state.model_clock_display(),
             ticking=self.state.is_model_turn(),
+            delay_remaining=self.state.model_delay_remaining(),
         )
 
         # Engine status line — cheap read, updates every frame.
@@ -753,6 +765,7 @@ class TimedMatchApp:
             label=f"You  ({self.settings['user_side']})  {self.state.user_tc.label()}",
             seconds=self.state.user_clock_display(),
             ticking=self.state.is_user_turn(),
+            delay_remaining=self.state.user_delay_remaining(),
         )
 
         # Move history sidebar (between the two clocks).
@@ -1007,8 +1020,12 @@ class TimedMatchApp:
             self._draw_scroll_arrow(x + w - 20, list_bottom - 12, up=False)
 
     def _draw_clock_block(self, x: int, y: int, label: str,
-                          seconds: float, ticking: bool) -> None:
-        """A clock display: label above, big mm:ss below."""
+                          seconds: float, ticking: bool,
+                          delay_remaining: float = 0.0) -> None:
+        """A clock display: label above, big mm:ss below.
+        If delay_remaining > 0 (the side is inside a Bronstein delay
+        window), a green "delay: X.Xs" indicator is drawn beside the
+        main clock — the main clock does NOT tick during this."""
         # Label
         lbl_surf = self.font_label.render(label, True, (60, 60, 90))
         self.screen.blit(lbl_surf, (x, y))
@@ -1027,6 +1044,12 @@ class TimedMatchApp:
             pygame.draw.rect(self.screen, (200, 170, 60), box, width=1)
         clk_surf = self.font_clock.render(clock_str, True, color)
         self.screen.blit(clk_surf, (x, y + 26))
+
+        # Delay countdown (only when actively in the delay window).
+        if delay_remaining > 0.0:
+            delay_str = f"delay: {delay_remaining:.1f}s"
+            delay_surf = self.font_label.render(delay_str, True, (20, 130, 30))
+            self.screen.blit(delay_surf, (x + 220, y + 40))
 
     def _draw_history(self, x: int, y: int, w: int, h: int) -> None:
         title = self.font_label.render("Moves", True, (60, 60, 90))
@@ -1075,9 +1098,15 @@ def main() -> None:
         "default_side": "W",
         "default_your_min": 5,
         "default_your_inc": 3,
+        "default_your_delay": 0,
         "default_model_min": 5,
         "default_model_inc": 3,
+        "default_model_delay": 0,
         "default_tactical_level": "basic",
+        "default_c_puct": 2.5,
+        "default_dirichlet_alpha": 0.0,
+        "default_noise_weight": 0.0,
+        "default_sim_ceiling": 800,
     }
 
     while True:
@@ -1092,9 +1121,15 @@ def main() -> None:
             "default_side": settings["user_side"],
             "default_your_min": settings["user_base_seconds"] // 60,
             "default_your_inc": settings["user_increment_seconds"],
+            "default_your_delay": settings.get("user_delay_seconds", 0),
             "default_model_min": settings["model_base_seconds"] // 60,
             "default_model_inc": settings["model_increment_seconds"],
+            "default_model_delay": settings.get("model_delay_seconds", 0),
             "default_tactical_level": settings.get("tactical_level", "basic"),
+            "default_c_puct": settings.get("c_puct", 2.5),
+            "default_dirichlet_alpha": settings.get("dirichlet_alpha", 0.0),
+            "default_noise_weight": settings.get("noise_weight", 0.0),
+            "default_sim_ceiling": settings.get("sim_ceiling", 800),
         }
 
         app = TimedMatchApp(settings)

@@ -32,21 +32,31 @@ from extinction_chess import Color, ExtinctionChess, Move  # noqa: E402
 
 @dataclass
 class TimeControl:
-    """Sudden-death-plus-increment for one side.
+    """Time control for one side.
 
-    base_seconds: initial time budget.
-    increment_seconds: added to the clock at the END of each move.
+    base_seconds: initial main-clock time budget.
+    increment_seconds: added to the main clock at the END of each move.
       (Standard "Fischer" increment — same rule Lichess uses.)
+    delay_seconds: "simple delay" grace period at the START of each turn.
+      A delay-only timer counts down first. If the player moves within
+      delay_seconds, no main-clock time is consumed. Only after the
+      delay expires does the main clock start ticking. Unlike increment,
+      unused delay does NOT bank onto the main clock — it just protects
+      each move up to delay_seconds. Set delay_seconds=0 to disable.
     """
     base_seconds: float
     increment_seconds: float
+    delay_seconds: float = 0.0
 
     def label(self) -> str:
-        """Human-readable label like '5+3' (minutes+seconds)."""
+        """Human-readable label like '5+3' or '5+3(d5)' (with delay)."""
         mins = int(self.base_seconds // 60)
         secs = int(self.base_seconds - mins * 60)
         base_str = f"{mins}" if secs == 0 else f"{mins}:{secs:02d}"
-        return f"{base_str}+{int(self.increment_seconds)}"
+        s = f"{base_str}+{int(self.increment_seconds)}"
+        if self.delay_seconds > 0:
+            s += f"(d{int(self.delay_seconds)})"
+        return s
 
 
 # ── Outcome enum ───────────────────────────────────────────────────────────
@@ -143,22 +153,49 @@ class MatchState:
     # ── Clock accessors (lazy elapsed subtraction) ──────────────────────
 
     def _elapsed_active(self) -> float:
-        """Wall seconds since the currently-ticking clock last started."""
+        """Wall seconds since the current turn started (both delay + main)."""
         if self._active_clock_start is None:
             return 0.0
         return time.monotonic() - self._active_clock_start
 
+    def _main_time_consumed(self, elapsed: float, delay: float) -> float:
+        """Given total elapsed this turn and the side's delay budget,
+        how much time has been drawn from the MAIN clock so far?
+        Zero while inside the delay window; positive after it expires."""
+        return max(0.0, elapsed - delay)
+
     def user_clock_display(self) -> float:
-        """Seconds remaining on user's clock RIGHT NOW (includes tick)."""
+        """Seconds remaining on user's MAIN clock RIGHT NOW (includes tick).
+
+        During the delay window at the start of the user's turn, this
+        stays constant — main clock hasn't started ticking yet.
+        """
         if self.is_user_turn():
-            return max(0.0, self.user_remaining_seconds - self._elapsed_active())
+            used = self._main_time_consumed(self._elapsed_active(),
+                                            self.user_tc.delay_seconds)
+            return max(0.0, self.user_remaining_seconds - used)
         return self.user_remaining_seconds
 
     def model_clock_display(self) -> float:
-        """Seconds remaining on model's clock RIGHT NOW."""
+        """Seconds remaining on model's MAIN clock RIGHT NOW."""
         if self.is_model_turn():
-            return max(0.0, self.model_remaining_seconds - self._elapsed_active())
+            used = self._main_time_consumed(self._elapsed_active(),
+                                            self.model_tc.delay_seconds)
+            return max(0.0, self.model_remaining_seconds - used)
         return self.model_remaining_seconds
+
+    def user_delay_remaining(self) -> float:
+        """Seconds left in the user's delay window this turn. Returns 0.0
+        if past the delay, if delay=0, or if it's not the user's turn."""
+        if self.is_user_turn() and self._active_clock_start is not None:
+            return max(0.0, self.user_tc.delay_seconds - self._elapsed_active())
+        return 0.0
+
+    def model_delay_remaining(self) -> float:
+        """Seconds left in the model's delay window this turn."""
+        if self.is_model_turn() and self._active_clock_start is not None:
+            return max(0.0, self.model_tc.delay_seconds - self._elapsed_active())
+        return 0.0
 
     # ── Applying moves ──────────────────────────────────────────────────
 
@@ -176,12 +213,19 @@ class MatchState:
         mover_side = self.game.current_player
         is_user_move = (mover_side == self.user_color)
 
-        # Elapsed since active clock start = thinking time for the mover.
+        # Elapsed since turn start (covers both delay window + main-clock use).
         thinking = self._elapsed_active()
 
-        # Time forfeit check: did the clock hit 0 while we were computing?
+        # Simple-delay semantics: the first `delay_seconds` are "free" — no
+        # main-clock deduction. Only the excess counts against remaining.
+        tc = self.user_tc if is_user_move else self.model_tc
+        time_from_main = self._main_time_consumed(thinking, tc.delay_seconds)
+
+        # Time forfeit check: only fires if the excess-over-delay drained
+        # the main clock. Moves completed within the delay window can NEVER
+        # forfeit (used=0).
         if is_user_move:
-            new_remaining = self.user_remaining_seconds - thinking
+            new_remaining = self.user_remaining_seconds - time_from_main
             if new_remaining <= 0:
                 self.user_remaining_seconds = 0.0
                 self._active_clock_start = None
@@ -192,7 +236,7 @@ class MatchState:
             self.user_remaining_seconds = new_remaining + self.user_tc.increment_seconds
             clock_after = self.user_remaining_seconds
         else:
-            new_remaining = self.model_remaining_seconds - thinking
+            new_remaining = self.model_remaining_seconds - time_from_main
             if new_remaining <= 0:
                 self.model_remaining_seconds = 0.0
                 self._active_clock_start = None
@@ -246,21 +290,26 @@ class MatchState:
     # ── Passive flag check ──────────────────────────────────────────────
 
     def check_flag(self) -> bool:
-        """If it's someone's turn and their clock has run out RIGHT NOW,
-        register a time forfeit and return True. Otherwise False. Cheap;
-        call every frame from the main loop."""
+        """If it's someone's turn and their MAIN clock has run out RIGHT
+        NOW (accounting for the delay window), register a time forfeit and
+        return True. Otherwise False. Cheap; call every frame.
+
+        The player is protected during the delay window — flag can only
+        fall AFTER delay_seconds have elapsed."""
         if not self.is_ongoing() or self._active_clock_start is None:
             return False
         elapsed = self._elapsed_active()
         if self.is_user_turn():
-            if self.user_remaining_seconds - elapsed <= 0:
+            used = self._main_time_consumed(elapsed, self.user_tc.delay_seconds)
+            if self.user_remaining_seconds - used <= 0:
                 self.user_remaining_seconds = 0.0
                 self._active_clock_start = None
                 self.outcome = OUTCOME_YOU_FLAGGED
                 self.outcome_detail = "You ran out of time"
                 return True
         else:  # model turn
-            if self.model_remaining_seconds - elapsed <= 0:
+            used = self._main_time_consumed(elapsed, self.model_tc.delay_seconds)
+            if self.model_remaining_seconds - used <= 0:
                 self.model_remaining_seconds = 0.0
                 self._active_clock_start = None
                 self.outcome = OUTCOME_MODEL_FLAGGED
@@ -317,27 +366,27 @@ class MatchState:
             than 30% of remaining on a single move once <10s left)
           - NO artificial floor — with pondering + tree reuse, the
             model can play near-instantly from an accumulated tree.
-            Trust the base formula. Very low budgets (e.g., 0.1s)
-            still let the engine return a move from its ponder tree.
-            Floor removed Aug 30 — previously 1.0s, which caused
-            certain-flag scenarios in sudden-death time controls.
+            Floor removed Aug 30.
+          - Delay is added on top as FREE time — spending it doesn't
+            eat the main clock, so we should always use it when available.
         """
         if not self.is_model_turn():
             return 0.0
         remaining = self.model_clock_display()
+        delay = self.model_tc.delay_seconds
 
         # Base: expected 30 moves left.
         base_budget = remaining / 30.0 + self.model_tc.increment_seconds
 
-        # Ceiling scales with time control: quarter of base clock, floor 30s
-        # so blitz still caps at 30s but rapid/classical get proportional
-        # headroom. A 20-min game caps at 5 min, a 3-min game caps at 30s.
+        # Ceiling scales with time control.
         hard_cap = max(30.0, self.model_tc.base_seconds / 4.0)
         budget = min(base_budget, hard_cap)
 
         # Time-trouble safety: never risk more than 30% of remaining if
-        # low on time. A 5s clock burning 5s on one move flags us next.
+        # main clock is low. Applied BEFORE adding delay so delay stays free.
         if remaining < 10.0:
             budget = min(budget, remaining * 0.3)
 
-        return budget
+        # Delay is free time — add on top of the main-clock budget so the
+        # model uses it every turn without depleting reserves.
+        return budget + delay
