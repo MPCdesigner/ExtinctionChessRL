@@ -1734,79 +1734,250 @@ reuse, c_puct=2.5. This gives us clean per-move sim budgets and
 reproducible games.
 
 
-== EXPERT-DATA DISTILLATION (PLANNED — pending compare_asymmetric verdict) ==
+== EXPERT-DATA DISTILLATION (DESIGNED Sep 2 — awaiting implementation) ==
 
-┌─ WHAT IT MIGHT BE ──────────────────────────────────────────────────────┐
+┌─ WHAT IT IS ────────────────────────────────────────────────────────────┐
 │ A new data-augmentation component for training. In parallel with main │
-│ self-play + helpers + terminal drilling, we'd generate games from an  │
-│ older checkpoint at a HIGHER sim count than current, and inject them  │
-│ into the training set. Justification: if a strong-yet-older model     │
-│ with more MCTS depth produces qualitatively better moves than the     │
-│ current model does with standard depth, those moves are "expert"       │
-│ demonstrations the current policy should distill.                      │
+│ self-play (400 games/iter at 800 sims) + helpers (400 games/iter at   │
+│ 800 sims), an autonomous "expert" producer generates games from an    │
+│ OLDER checkpoint at 4× TRAINING SIMS (3200) and folds them into the   │
+│ training buffer with fractional weighting. Motivation: at 4× depth,   │
+│ older checkpoints (validated at 50-iter age gap) generate strictly    │
+│ stronger games than the current model at training depth — so those    │
+│ games serve as high-quality supervision signal that the current       │
+│ policy should distill.                                                 │
 └─────────────────────────────────────────────────────────────────────────┘
+
+━━ Motivation: three experiments (Sep 1-2 2026) ━━━━━━━━━━━━━━━━━━━━━
+
+Ran compare_asymmetric.py three times to characterize how MCTS depth
+compensates for policy age. All tests: iter 1020 (newer) vs iter 970
+(older, 50 iters apart). Results:
+
+  Test              M1 sims  M2 sims  Ratio  iter 970 %
+  ────────────────  ───────  ───────  ─────  ──────────
+  Symmetric (=800)      800      800    1×     ~42%
+  Asymmetric 1 (611940) 400      800    2×     43.8%
+  Asymmetric 2 (611943) 400     1600    4×     75.0%
+  Asymmetric 3 (611962) 800     3200    4×     72.5%
+
+Key findings:
+- 2× depth is not enough — iter 970 at 2× barely improves over same-
+  depth H2H (43.8% vs 42%). Small compensation for age.
+- 4× depth is a decisive advantage — 72-75% consistently, at both
+  absolute sim scales. This is 30 percentage points above 2× at the
+  same absolute sim counts.
+- Depth-scaling appears highly non-linear across the 2×→4× boundary.
+- Extrapolation: at 4× training sims (3200), an older checkpoint
+  generates games ~72% likely to beat the current model at 800 sims.
+  Those games are HIGHER QUALITY than current self-play. Distilling
+  them into training should raise the current model's policy floor.
 
 Prior art: KataGo, LC0, and MuZero variants use similar techniques —
 "reference" games from stronger (via depth) opponents get folded into
-the training buffer as high-quality supervision signal.
+the training buffer as supervision signal.
 
-━━ Design questions to nail down BEFORE implementation ━━━━━━━━━━━━━━━
+━━ Locked design decisions (Sep 2 2026) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. Which checkpoint provides expert data?
-     A. Fixed offset (iter N-10)         — simple, uses recent history
-     B. Fixed absolute (e.g. iter 1020)  — stale over time; would need
-                                           periodic re-anchoring
-     C. Adaptive: strongest historical
-        anchor per benchmark data        — principled but complex
-   Starting recommendation: A (N-10). Matches the checkpoint cadence.
+   **LATEST MULTIPLE-OF-10 CHECKPOINT** (e.g. iter 1040 while main is
+   at iter 1041-1049; switch to iter 1050 once iter 1050 saves).
+   Rationale: only ×10 iters get archived as az_iter_<N>_XXpct.pt.
+   Intermediate iter checkpoints get overwritten and can't be reloaded.
+   Iter offset from current is therefore 0-10 iters (much smaller than
+   our tested 50-iter gap — makes 4× depth advantage stronger, not
+   weaker).
 
-2. How much expert data per iter?
-     A. ~100 games (~25% of main)  — light injection
-     B. ~200 games (matches helper)— matches proven recency multiplier
-     C. ~400 games (matches main)  — dominates the training mix
-   Starting recommendation: B (~200 games).
+2. Expert sim count?
+   **4× TRAINING SIMS = 3200 per move**. Validated by Sep 2 tests.
 
-3. Expert sim count?
-     Depends on compare_asymmetric.py's answer. If iter N-10 with 2x
-     sims (=1600) reliably beats iter N with 800, use 1600 for expert.
-     If we need 3x (=2400), use that. Diminishing returns beyond ~3x.
+3. Games per batch (per expert file)?
+   **Cap at 1000 games**. Producer stops auto-resubmitting once file
+   has ≥1000 games. Wall-time-check pattern from train.sh: producer
+   measures avg game generation time, adds 1000s buffer, stops+
+   resubmits before wall time exit if there's still headroom AND
+   game cap not reached.
 
-4. How to inject?
-     Clone helper.sh → expert.sh. Add helper-like handling in
-     alphazero.py (parallel to launch_helper_with_fallback). Consume
-     at training time via a new consume_expert_files() alongside
-     consume_helper_files().
+4. How to inject into training?
+   **Fractional weighting.** All expert positions consumed at training
+   time, but each position's loss weight = min(1.0, 15000 / P) where
+   P = actual expert positions in the file. So:
+     P ≤ 15k  → weight = 1.0 (same as helpers)
+     P = 30k  → weight = 0.5 (half-weight, sum equivalent to helpers)
+     P = 60k  → weight = 0.25 (quarter-weight)
+   Net effect: total expert contribution ≈ 15k position-equivalents
+   regardless of file size. Stable behavior across short vs long
+   producer runs.
 
 5. Should expert games use tree reuse?
-     YES (matches self-play conventions). This gives them extra
-     effective depth — the reason we're generating them in the first
-     place.
+   YES. Matches self-play conventions (the whole point of expert is
+   deeper effective search).
 
-━━ Concerns to address in implementation ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. Auto-resubmit semantics for producer?
+   YES, mirroring train.sh's USR1-trap + sbatch pattern. Producer is
+   autonomous — runs continuously even when main is down. Only stops
+   when: (a) main sends stop signal, (b) game cap reached, or
+   (c) wall-time approaches and won't fit another game.
 
-- Off-policy: expert data is from a DIFFERENT set of weights than
-  current model. Slightly more off-policy than helpers (which are on
-  the same iter-N-1 model as main). Might cause policy oscillation if
-  weighted too heavily.
-- Compute cost: 1600-sim games take ~2× normal 800-sim games. Adds
-  meaningful GPU-hours per iter.
-- Bootstrap: for iter N < 20, no iter N-10 checkpoint exists. Would
-  need to disable expert data until iter 30+.
-- Interaction with existing helpers: current pipeline is main +
-  helpers (recency multiplier). Adding expert = depth multiplier. Two
-  different augmentation strategies. Might synergize or might overwhelm
-  main's own signal — needs empirical validation.
+━━ Producer/consumer architecture ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━ Path forward ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                                                                     │
+  │   MAIN (delta-slurm1)          EXPERT (thor-slurm1, autonomous)     │
+  │   ────────────────────         ──────────────────────────────       │
+  │                                                                     │
+  │   iter 1040 saves ──sbatch──►  expert.sh loads az_iter_1040_*.pt   │
+  │                                Loop: generate game @ 3200 sims,     │
+  │                                append to expert_v1040.npz, check    │
+  │                                for stop marker + game cap +         │
+  │                                wall-time, resubmit if needed.       │
+  │   ...                                                               │
+  │   iter 1041-1045 train         ...still generating expert_v1040     │
+  │   normally (no expert data     ...                                  │
+  │   yet)                                                              │
+  │   ...                                                               │
+  │   iter 1046 self-play starts   ...                                  │
+  │   At timing #15000, main       Producer sees stop_v1040_iter1046   │
+  │   writes stop marker           marker, finishes current game,       │
+  │                                writes expert_v1040.npz atomically,  │
+  │                                then writes expert_v1040.ready flag  │
+  │                                and exits (no auto-resubmit).        │
+  │   Iter 1046 training reads     ...                                  │
+  │   expert_v1040.npz (weight     ...                                  │
+  │   scaled per formula #4)                                            │
+  │   ...                                                               │
+  │   iter 1046-1055 train with    ...                                  │
+  │   expert_v1040 batch each iter                                      │
+  │   ...                                                               │
+  │   iter 1050 saves ──sbatch──►  Kill any leftover expert-v1040       │
+  │                                jobs; launch expert-v1050.sh         │
+  │   ...                                                               │
+  │                                                                     │
+  └─────────────────────────────────────────────────────────────────────┘
 
-Step 1: Run compare_asymmetric.py (submitted as job 611940 on Sep 1)
-        to measure the actual advantage of depth-augmented iter 970 vs
-        iter 1020. Verdict determines whether Step 2 makes sense.
-Step 2: If Step 1 shows meaningful advantage → implement expert.sh
-        + alphazero.py hooks. Test on 5 iters with expert data ON,
-        compare loss trajectory + iter-benchmark results vs baseline.
-Step 3: If Step 2 looks good → commit; document as new training
-        component in the "TRAINING PARAMETER CHANGELOG" section.
+━━ Coordination files (in ~/expert_buffer/) ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  expert_v<N>.npz        — game data (atomic writes: tmp + os.replace)
+  expert_v<N>.ready      — empty flag file, written AFTER expert_v<N>.npz
+                            is fully saved. Main only reads .npz if
+                            .ready exists (avoids racing mid-write).
+  stop_v<N>_iter<M>.marker — signal from main at iter M to iter-N-
+                              producer. Marker is iter-tagged so a
+                              stale marker from a crashed main doesn't
+                              misfire on the next main resubmit.
+                              Cleanup: main deletes all stop_v<N>_*
+                              markers after consuming iter N's batch.
+
+━━ Node assignments (post-Sep 2 architecture) ━━━━━━━━━━━━━━━━━━━━━━━
+
+  delta-slurm1    — main training (rtx_2080_ti)
+  trpro-slurm1    — helpers (rtx_3090)
+  trpro-slurm2    — benchmarks (rtx_4090)
+  thor-slurm1     — EXPERT (rtx_3090)                              ★ NEW
+
+No contention between concurrent components. Each has dedicated GPUs.
+When one node is down (e.g. delta for maintenance), the others keep
+operating: helpers still generate, benchmarks still run, expert still
+produces games (against the last-saved checkpoint). Only when main
+comes back does everything reconverge.
+
+━━ Files to create ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  src/run_expert.py       — producer script. Loads az_iter_<N>_*.pt,
+                            generates games in a loop, checks stop
+                            marker + game cap + wall-time between games,
+                            writes expert_v<N>.npz atomically, writes
+                            expert_v<N>.ready flag on clean exit.
+                            Mirror pattern of src/run_helper.py + wall-
+                            time check from src/alphazero.py's train().
+
+  ~/extinction-chess/expert.sh
+                          — sbatch wrapper. Mirrors ~/train.sh:
+                            #SBATCH --gres=gpu:rtx_3090:1
+                            #SBATCH --nodelist=thor-slurm1
+                            #SBATCH --nodes=1
+                            #SBATCH --ntasks=1
+                            #SBATCH --cpus-per-task=4
+                            #SBATCH --mem=32G
+                            #SBATCH --time=24:00:00
+                            #SBATCH --output=/home/h74liang/expert_%j.log
+                            #SBATCH --signal=B:USR1@300
+                            + USR1 trap for auto-resubmit
+                            + PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+                            + python3 run_expert.py --checkpoint-iter <N>
+
+━━ Files to modify ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  src/alphazero.py       — train() function:
+                            + At every ×10 iter save: scancel any
+                              leftover expert-v<N-10> jobs; sbatch new
+                              expert-v<N>.sh (or run expert.sh with
+                              --checkpoint-iter=<N>).
+                            + At start of each iter's training prep:
+                              find latest expert_v<M>.ready flag; if
+                              present, load expert_v<M>.npz, compute
+                              per-position sample weight per formula #4,
+                              concatenate positions + weights into
+                              training batch alongside helpers.
+                            + At start of iter N+6: write stop marker
+                              for iter N-10's producer.
+                          — Loss computation: add sample_weight arg
+                            support (F.cross_entropy with
+                            reduction='none', then .mul(weights).mean()).
+
+━━ Concerns to monitor during rollout ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- **Off-policy drift**: expert data is from a checkpoint 0-10 iters
+  older than current, generated at 4× depth. Different policy than
+  current. Watch for policy loss oscillation or value-loss increase
+  after enabling. Aug 8/29 exploration bumps caused similar bumps —
+  expect similar transient behavior.
+- **Bootstrap**: no expert data before the first ×10 checkpoint of
+  the expert-enabled era. If enabled at iter 1050, first available
+  expert batch = expert_v1050 ready at ~iter 1056. Iters 1051-1055
+  train without expert data (normal behavior for that phase).
+- **Compute cost**: expert generation at 3200 sims/move = ~4× normal
+  helper time per game. On thor's 2× 3090s, generating 1000 games
+  takes ~40h. Over a typical 10-iter cycle (~35h wall time), we
+  probably won't hit the 1000-game cap — but the fractional-weighting
+  design handles any outcome gracefully.
+- **Cluster impact**: expert continuously occupies both of thor's
+  3090s. If thor becomes needed for something else (like it did in the
+  Sep 2 asymmetric experiments), we lose flexibility. Not a blocker,
+  but worth remembering.
+- **Interaction with existing helpers**: helpers = recency multiplier
+  (current model at current depth); expert = depth multiplier (older
+  model at 4× depth). Two different augmentation signals. Might
+  synergize (broader training distribution) or might create tension
+  (helper says "current model would play X here", expert says "with
+  more depth I'd play Y"). Empirical only.
+
+━━ Rollout plan ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1: Cluster recovery. Wait for delta-slurm1 maintenance to
+         complete and trpro-slurm2 to be brought back up. Verify main
+         + helper + benchmark pipeline works normally for at least
+         one iter benchmark cycle (probably iter 1040 or iter 1050).
+
+Step 2: Aug 29 bump verdict. Interpret the first fully-post-bump
+         benchmark (iter 1040 or later) to decide whether Aug 29's
+         2.0/0.75 values are keepers or need revert. Expert distillation
+         should be layered on TOP of stable settings, not deployed
+         while another change is being evaluated.
+
+Step 3: Implement + test expert pipeline. Write run_expert.py, expert.sh,
+         alphazero.py hooks. Test on a scratch iter (or wait for an
+         organic ×10 save). Run 5-10 iters with expert enabled, compare
+         loss trajectory + benchmark results vs pre-expert baseline.
+
+Step 4: Rollback criteria. If any of these fire, revert expert:
+         - Policy loss climbs >+0.15 for 2+ iters and stays elevated
+         - iter N benchmark tactical @400 drops >10% from baseline
+         - iter N benchmark H2H vs iter N-10 stays <45% for 2 checkpoints
+         - Any training loss becomes NaN (fractional-weight bug)
+
+Step 5: If Step 4 clean → keep. Add row to TRAINING PARAMETER CHANGELOG.
+         Document effective-iter and observed effects.
 
 
 == UPDATING TRAINING HISTORY FILES ==
