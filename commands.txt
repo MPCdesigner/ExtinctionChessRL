@@ -1639,6 +1639,7 @@ to understand what the model is doing:
   ─────────────────────────────── ─────── ──────────── ─────────────  ────────  ──────────
   MAIN self-play (run_training)   2.5     2.0          0.75           True      True
   HELPER self-play (run_helper)   2.5     2.0          0.75           True      True
+  EXPERT self-play (planned)      2.5     2.0          0.75           True      True     [+ num_sims=3200]
   compare_extensive.py            2.5     0.0          0.0            False     False
   compare_asymmetric.py           2.5     0.0          0.0            False     False
   bench_vs_tactical.py            2.5     0.0          0.0            False     False
@@ -1818,6 +1819,40 @@ the training buffer as supervision signal.
    autonomous — runs continuously even when main is down. Only stops
    when: (a) main sends stop signal, (b) game cap reached, or
    (c) wall-time approaches and won't fit another game.
+
+7. MCTS knobs for expert games?
+   MATCH MAIN's post-Aug-29 values. The ONLY difference from
+   helpers is num_simulations (3200 vs 800). Full table:
+
+     Param                 Main/Helper   Expert   Match?
+     ────────────────────  ───────────   ──────   ──────
+     num_simulations           800        3200      NO
+     c_puct                    2.5        2.5       yes
+     dirichlet_alpha           2.0        2.0       yes
+     noise_weight              0.75       0.75      yes
+     tactical_shortcuts        True       True      yes
+     tree_reuse                True       True      yes
+     temp_threshold            30         30        yes
+     num_parallel              50         50        yes
+     mcts_batch_size           8          8         yes
+
+   Why match main (rather than go deterministic like benchmarks)?
+   - Training pipeline consistency: main and helper data are noisy;
+     mixing deterministic expert data would create distribution
+     mismatch.
+   - Aug 29 exploration bump exists to keep rare-move planes visited.
+     Deterministic MCTS at 3200 sims would concentrate visits even
+     more tightly on top moves — defeats the purpose.
+   - Dirichlet noise is ROOT-ONLY. Expert's 4× depth benefit accrues
+     at deeper nodes where noise doesn't reach anyway. Best of both.
+
+   Why tactical_shortcuts=True?
+   - Main uses it → training data includes mate-in-1 forcing signal
+     (all sims → winning move if one exists).
+   - Expert without it would sometimes MISS mate-in-1 forcing (MCTS
+     at 3200 sims finds it probabilistically, not deterministically).
+     That's a slight regression in tactical training pressure.
+   - Match main → maintain the tactical signal.
 
 ━━ Producer/consumer architecture ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
