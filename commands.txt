@@ -1925,6 +1925,94 @@ comes back does everything reconverge.
                             support (F.cross_entropy with
                             reduction='none', then .mul(weights).mean()).
 
+━━ Producer implementation: MUST use batched_self_play ━━━━━━━━━━━━━━
+
+run_expert.py MUST call `batched_self_play(...)` (the CppSelfPlayManager
+path), NOT the sequential per-game `mcts_search` loop. Same reasoning
+as run_helper.py:
+
+  - CppSelfPlayManager runs `num_parallel=50` games concurrently and
+    batches MCTS leaves from all 50 into single NN calls (up to
+    max_batch=512). Massive GPU utilization win.
+  - Sequential-per-game MCTS (like compare_extensive.py or
+    compare_asymmetric.py) does one game at a time — no batching,
+    GPU underutilized. Fine for benchmarks (reproducibility >
+    throughput) but wasteful for data generation.
+
+Naming this explicitly here because the Sep 2 asymmetric tests
+(compare_asymmetric.py) used the sequential path — don't accidentally
+copy that pattern when writing run_expert.py. Mirror run_helper.py.
+
+━━ Throughput expectations (Sep 2 estimates) ━━━━━━━━━━━━━━━━━━━━━━━
+
+Two very different regimes coexist in the codebase — worth being clear
+about which one applies when:
+
+  Regime                        Sims/move  Parallel  Games/hour  s/game
+  ─────────────────────────────  ─────────  ────────  ──────────  ──────
+  Main self-play (batched)          800    50 games      ~122      ~30s
+  Helper self-play (batched)        800    50 games      ~122      ~30s
+  Expert self-play (batched) ★     3200    50 games    ~30-40      ~90-120s
+  Asymmetric benchmark (seq)       3200         1        ~28       ~128s
+
+  ★ = projected from main's numbers scaled by 4× sim count. To be
+      confirmed once run_expert.py runs live for the first time.
+
+  Note: Expert per-game time (~2min amortized in batched mode)
+  coincidentally resembles the sequential asymmetric test (~2min per
+  game) — but for very different reasons. Sequential is slow because
+  no parallelism; batched at 3200 sims is slow because each move needs
+  4× the NN work. Don't confuse the two.
+
+Batched-mode capacity planning:
+
+  Expert generation cycle = ~5 iters of main wall time = ~17.5h
+  Expected batched throughput: 30-40 games/hour on 1× rtx_3090
+  Expected batch size in cycle: 500-700 games (per file)
+  Well below our 1000-game hard cap → cap only triggers on outages.
+
+  If we deploy 2 parallel expert jobs (both of thor's 3090s):
+    Combined throughput: ~60-80 games/hour
+    Per 17.5h cycle: 1000-1400 games (would hit cap in normal cycle)
+  Fractional-weight consumption handles either scale gracefully.
+
+Extended main outage (48h+):
+
+  Producer keeps running: 48h × 35 games/hour ≈ 1680 games generated
+  Hits 1000-game cap → producer stops auto-resubmitting
+  Weight ≈ 15000/(~37000 positions) ≈ 0.41
+  Contributes at reduced weight, no distribution skew.
+
+━━ Stop-marker timing (Option B with graceful fallback) ━━━━━━━━━━━━
+
+Main writes the `stop_v<N>_iter<M>.marker` file at **timing #15000 of
+iter N+6's self-play** (roughly 85% through the self-play phase). This
+squeezes maximum generation time from the producer before consumption:
+
+  - Producer sees marker between games, finishes current game
+    (~2-3 min at 3200 sims), atomically writes .npz + .ready
+  - Main's iter N+6 self-play continues for another ~500-1000s after
+    the stop marker fires (remainder of self-play + training prep)
+  - By the time main reaches training step, .ready flag exists
+
+Graceful fallback if producer is slow:
+
+  If .ready doesn't exist yet when main's training step starts (e.g.
+  producer's final game is running long, or producer crashed):
+    - Main proceeds WITHOUT expert data this iter (log the miss)
+    - Next iter, check .ready again — if present, resume consumption
+    - No blocking, no wasted training time
+  This makes the system robust to occasional producer slowness or
+  wall-time-boundary weirdness.
+
+Consumption stops when new batch is ready:
+
+  When iter N+16 sees expert_v(N+10).ready exists AND iter N+10's batch
+  has never been consumed, main:
+    1. Deletes expert_v<N>.npz + expert_v<N>.ready (old batch)
+    2. Deletes stop_v<N>_iter*.marker (cleanup)
+    3. Loads expert_v(N+10).npz into training
+
 ━━ Concerns to monitor during rollout ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 - **Off-policy drift**: expert data is from a checkpoint 0-10 iters
