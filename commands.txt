@@ -1793,11 +1793,15 @@ the training buffer as supervision signal.
    **4× TRAINING SIMS = 3200 per move**. Validated by Sep 2 tests.
 
 3. Games per batch (per expert file)?
-   **Cap at 1000 games**. Producer stops auto-resubmitting once file
-   has ≥1000 games. Wall-time-check pattern from train.sh: producer
-   measures avg game generation time, adds 1000s buffer, stops+
-   resubmits before wall time exit if there's still headroom AND
-   game cap not reached.
+   Naturally capped by the 24h SBATCH wall time — see decision #6
+   below. In practice, expected 500-900 games per batch on a single
+   rtx_3090 in one 24h job. No auto-resubmit needed.
+
+   Optional safety cap of 1000 games kept as defense-in-depth (in
+   case throughput ever comes in much higher than projections). If
+   the file has ≥1000 games, producer exits cleanly without generating
+   more. Non-load-bearing — fractional weighting at consumption time
+   handles any actual game count.
 
 4. How to inject into training?
    **Fractional weighting.** All expert positions consumed at training
@@ -1815,10 +1819,32 @@ the training buffer as supervision signal.
    deeper effective search).
 
 6. Auto-resubmit semantics for producer?
-   YES, mirroring train.sh's USR1-trap + sbatch pattern. Producer is
-   autonomous — runs continuously even when main is down. Only stops
-   when: (a) main sends stop signal, (b) game cap reached, or
-   (c) wall-time approaches and won't fit another game.
+   **NO auto-resubmit** — 24h SBATCH wall time is a natural cap
+   (Sep 2 simplification, was originally planned as YES).
+
+   Math for why auto-resubmit is unnecessary:
+     - Normal operation: producer runs at most 5.85 iters × 3.5h
+       ≈ 20h before stop-marker fires (Option B timing at iter N+6's
+       self-play #15000). Well under 24h.
+     - Outage case: producer runs to 24h, exits with ~700-900 games,
+       .ready flag written. Main comes back, existing games consumed
+       as usual. Any newer ×10 iter save fires a fresh producer on
+       the newer checkpoint.
+     - Running longer than 24h would just accumulate games that
+       fractional-weighting scales down anyway. No benefit.
+
+   Producer exit conditions (any of these → save + .ready + exit):
+     (a) Stop-marker present in ~/expert_buffer/
+     (b) Game count ≥ 1000 (optional safety cap; see #3)
+     (c) Wall-time nearly up (self-exit ~5 min before 24h; matches
+         main's avg-game-time + buffer pattern)
+
+   NO USR1 trap needed. NO sbatch line at end of expert.sh needed.
+   Simpler code path than train.sh — expert.sh is basically:
+     #!/bin/bash
+     #SBATCH ... (headers)
+     python3 run_expert.py --checkpoint-iter <N>
+   That's it. No trap, no resubmit.
 
 7. MCTS knobs for expert games?
    MATCH MAIN's post-Aug-29 values. The ONLY difference from
@@ -1927,7 +1953,9 @@ comes back does everything reconverge.
                             time check from src/alphazero.py's train().
 
   ~/extinction-chess/expert.sh
-                          — sbatch wrapper. Mirrors ~/train.sh:
+                          — sbatch wrapper. Simpler than train.sh
+                            because there's no auto-resubmit (see
+                            decision #6):
                             #SBATCH --gres=gpu:rtx_3090:1
                             #SBATCH --nodelist=thor-slurm1
                             #SBATCH --nodes=1
@@ -1936,10 +1964,14 @@ comes back does everything reconverge.
                             #SBATCH --mem=32G
                             #SBATCH --time=24:00:00
                             #SBATCH --output=/home/h74liang/expert_%j.log
-                            #SBATCH --signal=B:USR1@300
-                            + USR1 trap for auto-resubmit
-                            + PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-                            + python3 run_expert.py --checkpoint-iter <N>
+
+                            export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+                            cd ~/extinction-chess/src
+                            python3 setup.py build_ext --inplace
+                            python3 run_expert.py --checkpoint-iter <N>
+                            # No trap, no resubmit — 24h wall time is
+                            # a natural cap, run_expert.py self-exits
+                            # gracefully before it.
 
 ━━ Files to modify ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
