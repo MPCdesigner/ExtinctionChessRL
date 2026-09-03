@@ -790,6 +790,152 @@ to keep BoardWidget minimal.
        only worth it if #1 also fails.
 
 
+== SEP 2-3 CLUSTER INSTABILITY (multi-mode post-driver-update issues) ==
+
+┌─ STATUS ────────────────────────────────────────────────────────────────┐
+│ Ongoing as of Sep 3. Follow-on effects from Aug 31's nvidia 580 point │
+│ release maintenance. Multiple failure modes across trpro nodes; delta │
+│ back in drain state (Sep 3 05:34) for stress test to diagnose.        │
+│                                                                         │
+│ Fix committed to train.sh: PYTORCH_CUDA_ALLOC_CONF=expandable_segments │
+│   already in place from Aug 30 CUDA OOM fix; helped rule out           │
+│   fragmentation as a cause. Also added --open-mode=append (see below). │
+│                                                                         │
+│ No PERMANENT code fix — issues are cluster-side, need admin action.    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+━━ Timeline of events ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Aug 31 23:29  Delta-slurm1 + trpro-slurm1 drained for nvidia 580
+                point release (PR 5555). Announced maintenance.
+  Sep 1 00:46   trpro-slurm2 unexpectedly rebooted (unrelated to
+                planned maintenance).
+  Sep 1 ~04:30  Delta returned to IDLE (drain complete + resumed).
+  Sep 2 16:28   Job 611939 (main) launched on delta, iter 1040.
+  Sep 2 19:52   iter_1040.npz written (self-play completed).
+  Sep 2 19:56   az_iter_1040_100pct.pt archived, auto-benchmark
+                battery launched (13 tests + aggregator).
+  Sep 2 21:39   trpro-slurm2 4090 CRASHED mid-benchmark. Test [4/13]
+                (vs iter 1000) died with "CUDA error: unspecified
+                launch failure" and "NVML: GPU is lost". Tests
+                [5-10, 12, 13] failed immediately with "Failed to
+                get device handle for GPU 0" (subsequent jobs
+                couldn't init CUDA on the corrupt slot).
+                Result: 6/13 tests succeeded (recent H2H + win-taking).
+  Sep 2 21:42   Delta-slurm1 NODE_FAIL — hardware/OS issue while
+                611939 was running iter 1041. SLURM's auto-requeue
+                policy kicked in.
+  Sep 2 21:42   SLURM waited for delta to become schedulable again.
+  Sep 2 23:54   Delta accepted job re-launch. Requeue attempt failed
+                immediately with container_p_join error (delta still
+                recovering). Job now FAILED, out of queue.
+  Sep 3 02:07   New job 614989 (main) sbatched, resumed from iter 1040.
+                Also sbatched benchmark reruns 614990/614991 for the
+                missing vs-100 and tactical tests on trpro-slurm2.
+                Both died in <15s with "CUDA unknown error" (4090
+                slot still bad).
+  Sep 3 02:12   Re-tried benchmark reruns 615010/615011 on trpro-slurm1
+                (rtx_3090) instead. Also died in <15s with the same
+                CUDA-init error. Meaning trpro-slurm1's 3090s ALSO
+                have some bad slots.
+  Sep 3 05:24   Iter 1042 helpers launched on trpro-slurm1.
+  Sep 3 05:34   Delta re-drained by admins for "maint: stress test
+                GPU to ensure stability after recent change".
+                Our running job continues; new jobs blocked.
+  Sep 3 06:08   Helpers 615007/615009 (for iter 1041) TIMED OUT at 4h
+                SBATCH wall time. Ran the full 4h without completing
+                200 games — trpro-slurm1 3090s running ~2× slower
+                than normal. Different failure than the CUDA-init
+                errors — helpers initialized fine, just slow.
+  Sep 3 06:22   iter 1041 completed with no helper data. Main proceeds
+                on 400 games/iter (main only). Same pattern as the
+                Aug 24-26 helper drought.
+
+━━ Failure modes distinguished ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. NODE_FAIL (hardware/OS)
+     Symptom: sacct shows State=NODE_FAIL, log ends abruptly mid-line
+     (slurmstepd killed with the node, no chance to write cancel line).
+     SLURM auto-requeues to same JOBID.
+     Log gets CLOBBERED on requeue unless --open-mode=append is set.
+
+  2. Container_p_join failure (post-node-recovery)
+     Symptom: 1-second FAILED state, log has 3 slurmstepd container
+     error lines only. Node was momentarily unavailable when SLURM
+     tried to launch. May be a transient race.
+     No requeue (application-level failure per SLURM).
+
+  3. GPU crash (CUDA unspecified launch failure)
+     Symptom: mid-execution "CUDA error: unspecified launch failure"
+     + "NVML: GPU is lost". GPU physically stops responding.
+     Subsequent jobs on same GPU slot fail with "Failed to get device
+     handle for GPU 0" until GPU is reset (admin intervention).
+
+  4. CUDA-init failure on new jobs
+     Symptom: <15s FAILED state, log has "RuntimeError: CUDA unknown
+     error - this may be due to an incorrectly set up environment,
+     e.g. changing env variable CUDA_VISIBLE_DEVICES after program
+     start." Suggests stale CUDA context or bad allocation slot.
+     Sometimes affects only specific SLURM slot allocations while
+     others on the same node work fine (existing jobs unaffected).
+
+  5. Helper timeout (slow completion)
+     Symptom: TIMEOUT state at exactly SBATCH wall time. Helper
+     initialized OK, ran the full duration, but didn't complete 200
+     games. Trpro-slurm1 running at ~2× normal helper time.
+     Reason unknown — possibly post-driver performance regression
+     or other users' shard usage.
+
+━━ Fixes / mitigations applied ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Added --open-mode=append to train.sh (line 12).
+     Prevents log clobber on SLURM auto-requeue after NODE_FAIL.
+     Same fix should apply to helper.sh + expert.sh when we build it.
+     Effect: existing run's output preserved, requeue's output appended
+     below. Aids post-mortem when things fail unexpectedly.
+
+  2. Bumping helper SBATCH wall time DOES NOT help against slow
+     helpers.
+     Why: helpers must finish before MAIN'S consume time (~end of
+     main's self-play, ~3h14m per iter on delta). Not SLURM wall
+     time. If helpers slower than main, they miss main's consume
+     regardless of their own wall time. Bumping to 8h just wastes
+     more GPU on doomed helpers.
+     If helper slowdown persists → reduce helper --num-games from 200
+     to 100 in helper.sh so helpers finish in time even at slow speed.
+     If slowdown resolves (post-cluster-fix) → revert to 200 games.
+
+  3. When multiple trpro slots are bad, main migration options are
+     limited. thor-slurm1 down + delta drained + trpro flaky = no
+     good options. Best move: wait for admin to fix cluster.
+     Historical migration recipe (delta ↔ trpro3090 ↔ thor3090) is
+     in "== HELPER TIMEOUT FIX ==" section below and various commit
+     messages; use as reference when the situation permits.
+
+━━ Distinguishing "cluster-side" vs "our code" issues ━━━━━━━━━━━━━━
+
+  Rules of thumb to save diagnostic time next time:
+    - Log ends mid-line + State=NODE_FAIL → cluster, not us.
+    - <15s job + "CUDA unknown error" → cluster slot issue, not us.
+    - Sudden 2× per-iter slowdown → cluster degradation, not us.
+    - Long job hits wall-time cleanly → us (or expected).
+    - OOM with "reserved but unallocated" → fragmentation, apply
+      env var fix (see CUDA OOM MITIGATION section above).
+
+━━ Standing action items after Sep 2-3 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  □ File admin ticket about trpro-slurm1/2 CUDA-init failures + slow
+    helpers post-driver-update. Sample failing job IDs: 614990, 614991,
+    615010, 615011, 615007, 615009.
+  □ Wait for delta stress test (Sep 3 05:34+) to complete before
+    trusting main's next resubmit. If delta not IDLE by main's wall
+    time exit (~19h from 05:00 = ~00:00 next day), re-migrate.
+  □ If iter 1042 helpers ALSO timeout: reduce helper --num-games from
+    200 to 100 in helper.sh. Revert once cluster is fixed.
+  □ Track iter 1050 auto-benchmark as the next opportunity for a full
+    Aug 29 bump verdict (iter 1040 battery had 6/13 tests succeed).
+
+
 == HELPER TIMEOUT FIX (Aug 24-26 2026) ==
 
 ┌─ STATUS ────────────────────────────────────────────────────────────────┐
