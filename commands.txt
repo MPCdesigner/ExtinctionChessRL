@@ -681,6 +681,98 @@ Imports from existing code (read-only reuse):
     root value for Phase 3 review. Filled during play, hidden until
     Phase 3 review UI lands.
 
+━━ PLANNED features (Sep 5 2026 — designed, not yet implemented) ━━━━
+
+Two quality-of-life additions requested during a game session:
+
+  1. GAME PAUSE
+  ─────────────
+  Ability to pause the game mid-play so the user can step away. Both
+  clocks (main + delay if active) freeze; engine finishes whatever
+  it's currently doing then idles.
+
+  Behavior:
+    - Pause button in the play-mode side panel (next to "New Game").
+      Also consider a keyboard shortcut (Space).
+    - When user clicks Pause:
+      * Both user + model main-clock accumulators freeze at their
+        current values (state._active_clock_start = None so
+        _elapsed_active() returns 0).
+      * Any active delay window also freezes at its current remainder.
+      * Engine keeps running its CURRENT ponder/search chunk to
+        completion (don't kill mid-chunk, wastes work). After the
+        chunk, engine goes to IDLE and stops advancing sim_count.
+      * Sim ceiling / early-play threshold check paused too — engine
+        won't trigger a move while paused, even if tree already
+        reached the ceiling.
+    - When user clicks Resume:
+      * Whichever clock was ticking resumes (record new
+        _active_clock_start = time.monotonic(), keeping the pre-
+        pause delay/main-clock accounting).
+      * Engine returns to SEARCHING (start_from(current position) if
+        it went fully idle, or just resumes its worker loop).
+    - Interaction with promotion dialog / advanced-shortcut prompts:
+      pausing while a dialog is open should be safe — dialog input
+      just doesn't fire until resume.
+
+  Implementation touchpoints:
+    - state.py: add pause_start_monotonic + is_paused fields.
+      Wrap _elapsed_active() to subtract cumulative paused-time.
+    - __main__.py: add pause button UI; keyboard handler for space;
+      on toggle, signal engine to enter/exit idle after current chunk.
+    - engine.py: add pause() / resume() methods. On pause, worker
+      loop lets current chunk finish then transitions to IDLE. On
+      resume, transitions back to SEARCHING with current root.
+    - State display: show a "PAUSED" banner overlay + pause both
+      clock-block visuals (no ticking pulse).
+
+  2. SIM-SKIPPING (early-play button when top move is locked)
+  ───────────────────────────────────────────────────────────
+  When the engine's top move is mathematically guaranteed to remain
+  the top choice — because even if ALL remaining sims went to the
+  second-place move it still couldn't overtake — a "Play now" button
+  appears. Clicking it plays the locked move instantly, saving the
+  remaining thinking time for later moves.
+
+  Lock condition (per frame during engine's turn):
+    Let top      = child with most visits
+    Let second   = child with 2nd-most visits
+    Let sim_left = sim_ceiling - engine.get_status_snapshot()["sim_count"]
+    Locked iff:  top.visits > second.visits + sim_left
+
+    (If sim_left = 0, we always play anyway. Only meaningful when
+     sim_left > 0 and top has a clear lead.)
+
+  UI:
+    - Button appears in engine-thinking status area only when the
+      lock condition is currently true. Disappears if lock breaks
+      (which is possible mid-search — a sim could bump second-place
+      close enough that it's no longer mathematically eliminated).
+    - Button label: "Play now — locked (top: <move> with N visits,
+      2nd: <move> with M visits, N > M + <sim_left>)"
+    - Clicking triggers _apply_model_move() immediately, same code
+      path as deadline-hit or ceiling-hit does today.
+
+  Note the difference from EARLY_PLAY_SIM_THRESHOLD:
+    - EARLY_PLAY_SIM_THRESHOLD (existing): plays when tree has
+      accumulated ≥ threshold sims, regardless of decision confidence
+    - Sim-skipping button (new): plays when the top move is MATH-
+      GUARANTEED to win, regardless of tree size
+    - Both can coexist. Sim-skipping is a USER-DRIVEN early play;
+      the sim ceiling is an AUTOMATIC early play.
+
+  Implementation touchpoints:
+    - engine.py get_status_snapshot(): also return second-place
+      move + its visit count so main can compute the lock condition
+      without needing full snapshot access.
+    - __main__.py: each frame during engine's turn, check lock and
+      draw button if locked. On click, invoke play-now code path.
+    - Small edge case: if the model has already run past its
+      deadline waiting for another chunk boundary, and lock is
+      already true when the deadline was set, the button would
+      appear but the deadline would fire almost immediately anyway.
+      Harmless — button gets clicked or deadline hits, same outcome.
+
 ━━ ROLLBACK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Most of the tool is self-contained under tools/play_timed/:
