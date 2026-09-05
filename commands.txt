@@ -628,6 +628,105 @@ then hand-edit one side.
     is always in White's perspective (matches positional_eval convention:
     positive = White winning). Applied uniformly to user & model moves.
 
+━━ TACTICAL SHORTCUT LEVELS (user-selectable via startup dialog) ━━━━━
+
+Three levels controlling how aggressively the model avoids tactical
+blunders. Chosen via radio group in the startup dialog; passed to
+Engine as tactical_level. Applies to MODEL moves only (user moves
+are never filtered — you make your own decisions).
+
+  Off (tactical_level="off"):
+    Passes tactical_shortcuts=False to mcts_search. No forced
+    shortcuts. Model must find mate-in-1 (extinction-in-1) the hard
+    way via MCTS visits driven by the value head. If a mate-in-1
+    move has a very small raw prior, MCTS might not visit it enough
+    at low sim counts and could miss it. "Pure model" mode — useful
+    for stress-testing raw policy quality.
+
+  Basic (tactical_level="basic", DEFAULT — matches training):
+    Root-only depth-1 shortcut fires inside mcts_search
+    (tactical_shortcuts=True). Before running any sims, checks every
+    legal root move on a scratch board: if game_over && winner ==
+    current_player after making that move, it's a "winning move".
+    If ≥1 winning move exists, distribute all num_simulations
+    across those winning moves, return root_value=1.0, skip the sim
+    loop entirely. Deterministic instant-win detection.
+
+  Advanced (tactical_level="advanced"):
+    Basic + depth-2 loss avoidance. Same underlying MCTS call as
+    basic (uses tactical_shortcuts=True). Additionally, a POST-MCTS
+    filter runs in _apply_advanced_shortcut in __main__.py:
+      1. Get MCTS's top move (best_move).
+      2. Simulate best_move; for each opponent legal reply, check if
+         any is an extinction-in-1 for opponent. If none — return
+         best_move unchanged (no override needed).
+      3. If mate hangs — walk snap["top_moves"] (ALL legal root
+         moves, sorted by visits desc) looking for the highest-
+         visited move that does NOT hang mate-in-1.
+      4. If found — play that safe alternative instead; record
+         override_reason in the snapshot for review-mode display.
+      5. If no safe alternative exists — play the original (loss
+         unavoidable).
+
+    Was the training-time shortcut pre-iter-101. Stripped from
+    training so the value head would learn "don't step there" from
+    gradient signal. Safe to re-enable during inference (no gradient
+    at play time), so it remains available in the tool.
+
+━━ ADVANCED-SHORTCUT edge cases (documented Sep 5 2026) ━━━━━━━━━━━━
+
+Two failure modes to be aware of. Neither has been observed in
+practice; documented preemptively for future debugging.
+
+  1. UNVISITED-SAFE-MOVE fallback
+  ────────────────────────────────
+  Scenario: MCTS's top-visited move hangs mate. All OTHER visited
+  moves ALSO hang mate. A safe move exists but MCTS never visited it
+  (typically because its raw prior was very low and sim count was
+  too small to explore widely).
+
+  What happens: snap["top_moves"] includes ALL legal root moves
+  (unvisited ones sit at the end of the visits-desc sorted list with
+  visits=0). The shortcut walks the list, rejects each visited
+  blunder in visit-count order, then reaches the unvisited safe move
+  and plays it.
+
+  Concerns:
+    - The safe move is picked by legal-moves iteration order among
+      unvisited moves (essentially arbitrary tiebreak).
+    - No quality signal beyond "doesn't hang mate-in-1". The move
+      could be a legitimate blunder in other ways — hangs a queen,
+      loses mate-in-2, etc. The shortcut only checks depth 2.
+
+  When it matters: low sim ceiling + subtle-mate landmine on
+  top-visited moves + legit safe move deep in the legal-moves list.
+  Uncommon.
+
+  Possible improvements (not yet implemented):
+    - Fallback ranking by raw prior for unvisited safe moves (cheap
+      — priors are already in root.children[i].prior)
+    - Mini-MCTS restricted to safe moves if no visited safe move
+      exists (slower but principled)
+    - Log a status-message warning when this fires so the user knows
+      MCTS coverage was insufficient
+
+  2. LOSS BEYOND DEPTH 2
+  ──────────────────────
+  The advanced shortcut ONLY checks depth 2 (opponent's immediate
+  reply). It doesn't check:
+    - Mate-in-2 (opponent replies, then wins with mate-in-1 on the
+      next move)
+    - Piece hangs (opponent captures on next move for material)
+    - Any deeper positional/tactical consequence
+
+  MCTS's OWN judgment normally covers this through visits, but if
+  fallback-to-unvisited fires, we've bypassed MCTS's ranking and
+  might play something MCTS would have dismissed.
+
+  Not a bug — the shortcut is named "loss avoidance depth 2" for
+  a reason. Just worth remembering: advanced is not a full-strength
+  tactical guardian, only a mate-in-1 guardian.
+
 ━━ FILES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   tools/play_timed/
