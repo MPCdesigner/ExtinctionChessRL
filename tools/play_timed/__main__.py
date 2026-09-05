@@ -480,15 +480,9 @@ class TimedMatchApp:
     def _set_review_index(self, idx: int) -> None:
         idx = max(-1, min(len(self.state.moves) - 1, idx))
         self._review_index = idx
-        # Reconstruct the position BEFORE the currently-reviewed move was
-        # played (standard chess-engine review convention: eval + board
-        # correspond to the same position, which is the pre-move state).
-        # Board shows position after ply (idx-1); the from/to highlights on
-        # rec.move then indicate the "planned move" about to be played,
-        # and the search snapshot shows the analysis that chose it.
-        # For idx=-1 (initial-position slot), reconstruct_at(-2) returns
-        # a fresh game per its clamp logic (initial position).
-        self._review_game = self.state.reconstruct_at(idx - 1)
+        # Reconstruct the position and cache it. Cheap for extinction chess
+        # (game lengths are ~40 moves).
+        self._review_game = self.state.reconstruct_at(idx)
         # Reset the analysis-column scroll to the top — the top-moves list
         # belongs to this ply, not the previous one.
         self._analysis_scroll = 0
@@ -850,24 +844,50 @@ class TimedMatchApp:
         is capped to whatever fits above max_bottom (still filtered to
         non-zero-visit rows, then trimmed to fit)."""
         idx = self._review_index
-        if idx < 0 or idx >= len(self.state.moves):
-            # Initial position — no snapshot.
+        n_moves = len(self.state.moves)
+
+        # Header describes the move that PRODUCED the current displayed
+        # board (post-move-N), same as before. Skips for the initial
+        # position (idx = -1).
+        if 0 <= idx < n_moves:
+            rec_played = self.state.moves[idx]
+            side_letter = "W" if rec_played.side == Color.WHITE else "B"
+            header = self.font_label.render(
+                f"Move {idx + 1}: {side_letter} {_move_str(rec_played.move)}"
+                f"  (thought {rec_played.thinking_time_seconds:.1f}s)",
+                True, (30, 30, 60))
+            self.screen.blit(header, (cx, cy))
+            cy += 22
+        else:
+            header = self.font_label.render(
+                "Initial position (before any move)",
+                True, (30, 30, 60))
+            self.screen.blit(header, (cx, cy))
+            cy += 22
+
+        # Snapshot: use the search of the CURRENTLY-DISPLAYED position
+        # (post-move-N), which is the analysis captured on the NEXT move
+        # (Move N+1, when the engine was searching at this state before
+        # the next move was played). Standard chess-engine review
+        # convention — analysis + board correspond to the same position.
+        # For the initial position (idx = -1), the analysis of that state
+        # is Move 1's snapshot (which searched the initial position).
+        snap_source_idx = idx + 1
+        if snap_source_idx >= n_moves:
+            # No next move exists — either at the last-move page (game
+            # over, no analysis of the terminal position) or on a
+            # zero-move game.
             note = self.font_row.render(
-                "(initial position — no move played yet)",
+                "(no analysis captured for this position — game ended here)",
                 True, (120, 120, 130))
             self.screen.blit(note, (cx, cy))
             return cy + 20
 
-        rec = self.state.moves[idx]
-        side_letter = "W" if rec.side == Color.WHITE else "B"
-        header = self.font_label.render(
-            f"Move {idx + 1}: {side_letter} {_move_str(rec.move)}"
-            f"  (thought {rec.thinking_time_seconds:.1f}s)",
-            True, (30, 30, 60))
-        self.screen.blit(header, (cx, cy))
-        cy += 22
-
+        rec = self.state.moves[snap_source_idx]
         snap = rec.search_snapshot
+        # Whose turn was it at the displayed position — that's rec.side,
+        # since rec is the move that will be played FROM here. Determines
+        # the perspective-flip for value display + ponder/own-search label.
         is_user_move = (rec.side == self.state.user_color)
         if snap is None:
             # No ponder result was available at capture time (e.g. you
