@@ -480,9 +480,15 @@ class TimedMatchApp:
     def _set_review_index(self, idx: int) -> None:
         idx = max(-1, min(len(self.state.moves) - 1, idx))
         self._review_index = idx
-        # Reconstruct the position and cache it. Cheap for extinction chess
-        # (game lengths are ~40 moves).
-        self._review_game = self.state.reconstruct_at(idx)
+        # Reconstruct the position BEFORE the currently-reviewed move was
+        # played (standard chess-engine review convention: eval + board
+        # correspond to the same position, which is the pre-move state).
+        # Board shows position after ply (idx-1); the from/to highlights on
+        # rec.move then indicate the "planned move" about to be played,
+        # and the search snapshot shows the analysis that chose it.
+        # For idx=-1 (initial-position slot), reconstruct_at(-2) returns
+        # a fresh game per its clamp logic (initial position).
+        self._review_game = self.state.reconstruct_at(idx - 1)
         # Reset the analysis-column scroll to the top — the top-moves list
         # belongs to this ply, not the previous one.
         self._analysis_scroll = 0
