@@ -872,6 +872,88 @@ Two quality-of-life additions requested during a game session:
       appear but the deadline would fire almost immediately anyway.
       Harmless — button gets clicked or deadline hits, same outcome.
 
+  3. MOVE TAKEBACK (analysis-mode convenience)
+  ─────────────────────────────────────────────
+  Ability to undo the last move(s) so the user can experiment with
+  alternative moves from a prior position. Standard "analysis mode"
+  feature in chess software. Useful for exploring how the model
+  responds to different lines without starting a fresh game.
+
+  Suggested default behavior: takeback undoes ONE FULL ROUND (both
+  the model's last response AND the user's move that preceded it,
+  = 2 plies). This puts the user back at their own turn from the
+  earlier position, so they can immediately play a different move
+  and see how the model responds. Alternative: undo 1 ply at a time
+  (more flexible, but more clicks for the common use case).
+
+  UI:
+    - "Take back" button in the play-mode side panel, next to
+      "New Game". Only enabled when a takeback is possible.
+    - Enabled iff: game is ONGOING, self.state.moves has ≥ 2 plies
+      (for default 2-ply undo), current turn is user's (never take
+      back mid-model-search — would interrupt), no promotion dialog
+      open.
+    - Optional keyboard shortcut: Ctrl+Z or U.
+
+  Behavior on click:
+    - Cancel any active model-thinking deadline
+      (self._model_move_deadline = None)
+    - state.take_back(n_plies=2):
+      * Pop the last 2 MoveRecords from state.moves
+      * state.game = state.reconstruct_at(len(state.moves) - 1)
+        (rebuild game to the new tail)
+      * Restore clocks to that ply's saved values using the
+        state.clocks_at(new_tail_ply) helper (already exists for
+        review mode — reuse it).
+      * Reset outcome = OUTCOME_ONGOING if it had been terminal
+        (rare — usually takeback is used mid-game).
+      * Set _active_clock_start = time.monotonic() for whoever's
+        turn it now is.
+    - Reset UI state: selected_square = None, legal_targets = set(),
+      promotion_pending = None.
+    - Engine reset: engine.stop() then engine.start_from(state.game)
+      to restart ponder from the new position. Old subtree state
+      is discarded (simplest — reusing pre-descent ancestor trees
+      would require deeper engine changes and rarely helps).
+    - Add a MoveRecord-marker to a separate takeback-history log
+      if we want (for later review), OR just accept that takebacks
+      are transient and never appear in the review.
+
+  Edge cases:
+    - Takeback when game just ended (extinction/flag): allow it so
+      user can explore alternatives to the game-ending move. Reset
+      outcome to ONGOING, remove terminal MoveRecords, resume play.
+    - Takeback mid-promotion: dialog cancels first, THEN the
+      previous ply is undone as normal.
+    - Takeback while model is thinking: block, or interrupt.
+      Blocking (button disabled during model's turn) is simplest.
+      Interrupting (button always enabled) is more flexible but
+      needs engine.stop() + deadline clear.
+    - Multiple rapid takebacks: allow. Each click undoes 2 more
+      plies. Bottom out at 0 plies (button greys out).
+
+  Interaction with pondering:
+    - Model's ponder tree is discarded on takeback. That's a real
+      cost — with tree reuse, model builds up thousands of sims
+      per game. Takeback throws it away. Acceptable for an
+      exploration/analysis feature (user consciously trading depth
+      for flexibility).
+
+  Implementation touchpoints:
+    - state.py: add take_back(n_plies) method. Uses reconstruct_at
+      and clocks_at (both already exist).
+    - __main__.py: add button + click handler; call state.take_back
+      + engine.start_from.
+    - engine.py: no changes needed. stop() + start_from() already
+      exist.
+
+  Purpose fit:
+    - Perfect for the "how does the model respond to different
+      moves from position X" use case the user described.
+    - Also useful for smoke-testing tactical shortcut levels
+      side-by-side (play a line with basic, take back, replay with
+      advanced enabled to compare).
+
 ━━ ROLLBACK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Most of the tool is self-contained under tools/play_timed/:
