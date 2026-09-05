@@ -775,3 +775,8 @@ Iter | Positions | Loss   | P-Loss | V-Loss | Time
 1037 |       698 | 1.4115 | 1.3321 | 0.0794 | 1.7s
 1038 |       698 | 1.4205 | 1.3472 | 0.0733 | 1.7s
 1039 |       699 | 1.4234 | 1.3554 | 0.0680 | 1.7s
+# iter 1040: drilling data lost. Training completed (model archive saved
+# Sep 2 19:56) but the log was clobbered by SLURM auto-requeue after the
+# subsequent NODE_FAIL on delta at 21:42. See training_history.txt iter
+# 1040 row for full context.
+1040 |         ? | ?      | ?      | ?      | ?
