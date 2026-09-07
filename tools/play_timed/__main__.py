@@ -193,6 +193,7 @@ class TimedMatchApp:
                                f"Good luck.")
         self.promotion_pending: Optional[Tuple[Position, Position]] = None
         self.new_game_button = pygame.Rect(0, 0, 0, 0)
+        self.takeback_button = pygame.Rect(0, 0, 0, 0)
         self.want_new_game = False
 
         # Phase 2 pondering state — when it's the model's turn, main computes
@@ -264,6 +265,14 @@ class TimedMatchApp:
                         self._set_review_index(-1)
                     elif event.key == pygame.K_END:
                         self._set_review_index(len(self.state.moves) - 1)
+                if event.type == pygame.KEYDOWN and self._review_index is None:
+                    # Takeback: U or Ctrl+Z during play. Silent no-op
+                    # when not currently allowed (see _can_take_back).
+                    if event.key == pygame.K_u:
+                        self._take_back()
+                    elif (event.key == pygame.K_z
+                            and (event.mod & pygame.KMOD_CTRL)):
+                        self._take_back()
 
             self.state.check_flag()
 
@@ -318,6 +327,13 @@ class TimedMatchApp:
         # New Game button click (always active)
         if self.new_game_button.collidepoint(pos):
             self.want_new_game = True
+            return
+
+        # Takeback button (only present in play mode). Silently no-ops
+        # when disabled — the button greying signals unavailability.
+        if (self._review_index is None
+                and self.takeback_button.collidepoint(pos)):
+            self._take_back()
             return
 
         # Promotion overlay eats all other clicks while active
@@ -511,6 +527,37 @@ class TimedMatchApp:
         if self._review_index is None:
             return
         self._set_review_index(self._review_index + delta)
+
+    # ── Takeback ─────────────────────────────────────────────────────────
+
+    def _can_take_back(self) -> bool:
+        """Blocked mid-model-thinking, mid-promotion, and when there isn't
+        a full user+model pair to undo. Documented in commands.txt
+        (TIMED MATCH TOOL → PLANNED features → move takeback)."""
+        if self.promotion_pending is not None:
+            return False
+        if len(self.state.moves) < 2:
+            return False
+        if not self.state.is_ongoing():
+            return False
+        if not self.state.is_user_turn():
+            return False
+        return True
+
+    def _take_back(self) -> None:
+        if not self._can_take_back():
+            return
+        if not self.state.take_back(n_plies=2):
+            return
+        self.selected_square = None
+        self.legal_targets = set()
+        self._model_move_deadline = None
+        self._model_move_triggered_by_threshold = False
+        # Ponder tree is invalidated by rolling the position back.
+        self.engine.stop()
+        self.engine.start_from(self.state.game)
+        n = len(self.state.moves)
+        self.status_message = f"Took back 2 plies (now at ply {n})."
 
     # ── Model move flow (Phase 2: ponder-aware) ──────────────────────────
 
@@ -725,19 +772,43 @@ class TimedMatchApp:
         pygame.draw.rect(self.screen, (255, 255, 255), panel)
         pygame.draw.rect(self.screen, (200, 200, 210), panel, width=1)
 
-        # New Game button (bottom, always visible).
-        btn = pygame.Rect(SIDE_X + 12, panel.bottom - 46,
-                          panel.right - SIDE_X - 24, 34)
-        self.new_game_button = btn
-        pygame.draw.rect(self.screen, (240, 240, 250), btn)
-        pygame.draw.rect(self.screen, (100, 100, 130), btn, width=1)
+        # Bottom button row. Play mode: Takeback + New Game side-by-side.
+        # Review mode: full-width New Game.
+        row_y = panel.bottom - 46
+        row_h = 34
+        row_x = SIDE_X + 12
+        row_w = panel.right - SIDE_X - 24
+        if self._review_index is None:
+            gap = 8
+            btn_w = (row_w - gap) // 2
+            self.takeback_button = pygame.Rect(row_x, row_y, btn_w, row_h)
+            self.new_game_button = pygame.Rect(
+                row_x + btn_w + gap, row_y, row_w - btn_w - gap, row_h)
+            self._draw_takeback_button(self.takeback_button)
+        else:
+            self.takeback_button = pygame.Rect(0, 0, 0, 0)
+            self.new_game_button = pygame.Rect(row_x, row_y, row_w, row_h)
+
+        pygame.draw.rect(self.screen, (240, 240, 250), self.new_game_button)
+        pygame.draw.rect(self.screen, (100, 100, 130),
+                         self.new_game_button, width=1)
         label = self.font_label.render("New Game", True, (30, 30, 60))
-        self.screen.blit(label, label.get_rect(center=btn.center))
+        self.screen.blit(
+            label, label.get_rect(center=self.new_game_button.center))
 
         if self._review_index is not None:
             self._draw_review_panel(panel)
         else:
             self._draw_play_panel(panel)
+
+    def _draw_takeback_button(self, btn: pygame.Rect) -> None:
+        enabled = self._can_take_back()
+        bg = (240, 240, 250) if enabled else (225, 225, 230)
+        fg = (30, 30, 60) if enabled else (150, 150, 155)
+        pygame.draw.rect(self.screen, bg, btn)
+        pygame.draw.rect(self.screen, (100, 100, 130), btn, width=1)
+        label = self.font_label.render("Takeback (U)", True, fg)
+        self.screen.blit(label, label.get_rect(center=btn.center))
 
     def _draw_play_panel(self, panel: pygame.Rect) -> None:
         """Live-game side panel: model clock, engine status, history, your clock."""

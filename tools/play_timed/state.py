@@ -287,6 +287,41 @@ class MatchState:
         self._active_clock_start = time.monotonic()
         return True
 
+    # ── Takeback ────────────────────────────────────────────────────────
+
+    def take_back(self, n_plies: int = 2) -> bool:
+        """Undo the last `n_plies` moves. Returns True on success.
+
+        Rebuilds the game position, restores per-side clocks to their
+        post-move-N state, clears any terminal outcome, and starts a
+        fresh timing window for whoever is now to move. The reason the
+        default is 2 is so that a user-then-model pair collapses back
+        to the user's original decision point.
+
+        Fails (returns False) if n_plies is out of range.
+        """
+        if n_plies < 1 or n_plies > len(self.moves):
+            return False
+        # Index of the ply we want to be "post-" after taking back.
+        # E.g. 5 moves total, n=2 → target ply-index = 2 (post-move-2 =
+        # after 3 moves; the remaining moves list has length 3).
+        target_idx = len(self.moves) - 1 - n_plies
+
+        # Rebuild game state and read clocks BEFORE popping so the
+        # existing self.moves indices are still valid.
+        rebuilt = self.reconstruct_at(target_idx)
+        user_t, model_t = self.clocks_at(target_idx)
+
+        del self.moves[-n_plies:]
+        self.game = rebuilt
+        self.user_remaining_seconds = user_t
+        self.model_remaining_seconds = model_t
+        self.outcome = OUTCOME_ONGOING
+        self.outcome_detail = ""
+        # Restart the currently-to-move side's clock right now.
+        self._active_clock_start = time.monotonic()
+        return True
+
     # ── Passive flag check ──────────────────────────────────────────────
 
     def check_flag(self) -> bool:
