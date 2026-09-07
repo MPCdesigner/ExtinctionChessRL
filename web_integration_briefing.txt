@@ -126,8 +126,33 @@ For a web deployment, decide up front:
 ─────────────────────────────────────────────────────────────────────────
 Coordinates: 0-indexed. Position(rank=0, file=0) is a1 (white's corner).
 
-Piece types (Enum): P N B Q R K (values are single-char strings).
-Colors (Enum): WHITE=True, BLACK=False.
+Piece types (Enum): P N B Q R K.
+Colors (Enum): WHITE, BLACK.
+
+⚠️  ENUM TYPE SWAP WHEN _ext_chess IS BUILT (which is now always the
+    case in production images — see §14.C5 fix):
+      - PieceType.value is INT (0-5) on the C++ path, single-char
+        STRING ("P".."K") on the pure-Python path.
+      - Color.value is INT (0=WHITE, 1=BLACK) on the C++ path,
+        BOOL (True=WHITE, False=BLACK) on pure Python.
+      - .name is stable across both: "PAWN".."KING", "WHITE"/"BLACK".
+        Key on .name for wire serialization.
+      - `for pt in PieceType` DOES NOT WORK on the pybind11 enum.
+        Use `PieceType.__members__.values()` — works on both flavours.
+      - Symptom if you get this wrong: TypeError concatenating str
+        with int on the first state message, OR (worse) silently
+        shipping integers to the browser instead of crashing. See
+        §16 for the observed failure.
+
+⚠️  current_player DOES NOT FLIP ON A GAME-ENDING MOVE. If your client
+    needs "who just moved" (e.g. to display the mover's evaluation),
+    capture game.current_player BEFORE make_move. Verified on 12
+    game-ending moves: 0/12 flipped after the terminal make_move.
+    mcts_search's root_value is in the mover's perspective, so a
+    display built by reading current_player AFTER make_move will
+    invert exactly on the terminal position — which is the move the
+    user scrutinises most. Applies to both C++ and pure-Python
+    paths. See §16.T1 for the observed symptom.
 
 Move object:
   - from_pos, to_pos: Position(rank, file)
@@ -350,6 +375,42 @@ tears down. Simplest possible surface.
 Skip in v1: takeback, pause, resume, opening book, multi-checkpoint
 selection, positional-eval overlay, live tree visualization. All of
 these exist in the pygame client already and can be ported later.
+
+DEPLOYMENT-HYGIENE CHECKLIST (learned the expensive way — see §17)
+-----------------------------------------------------------------
+None of these are theoretical — each one caused wasted GPU time or
+a real outage before it was caught. Copy them into the shape of
+your web_play.py before shipping.
+
+☐ CLOSE THE SOCKET ON GAME OVER. Modal keeps the container alive
+   as long as the WebSocket is open, not as long as the game runs.
+   An unclosed socket after game_over holds a GPU until the function
+   timeout (default 3600s = $0.80 wasted per abandoned game).
+   Layer defenses: server closes on game_over, client closes on
+   game_over, receive-wait bounded by the human's clock (so a
+   walk-away flags on time and cleans up).
+
+☐ SET AN IDLE TIMEOUT for connected-but-not-playing sockets. The
+   web_play.py default is 120s. A tab that connects and never
+   starts a game drops after IDLE_TIMEOUT_S.
+
+☐ CLAMP CLIENT-SUPPLIED CONFIG. If the client picks the time
+   control or sim ceiling (which it typically must, since tier
+   determines them), a crafted request can park a GPU on an
+   arbitrary clock. web_play.py clamps base to [30, 900]s,
+   increment to [0, 30]s, sim_ceiling to [50, MAX_SIM_CEILING].
+
+☐ USE `modal deploy`, NOT `modal serve`, FOR PUBLIC URLS. `modal
+   serve` binds to the local process and dies with it (observed
+   ConflictError APP_STATE_STOPPED mid-session, then every request
+   404'd; users see only "connection failed"). Use `modal deploy`
+   for a stable URL that survives with no local process; containers
+   still scale to zero when idle.
+
+☐ CONSIDER A GPU FALLBACK. L4 capacity isn't always available on
+   demand ("waiting to be scheduled on a GPU_L4 worker"). Keep an
+   `A10` swap ready as a one-line change if L4 waits recur —
+   pricier per second, often more available.
 
 
 ─────────────────────────────────────────────────────────────────────────
@@ -668,15 +729,25 @@ strictly optional — 5+3 without delay is standard blitz.
 Tactical shortcut: 'basic' — matches training. Skip 'advanced' for
 v1 (it adds a post-MCTS filter that's marginal value at 800 sims).
 
-DIFFICULTY TIERS (optional v1.5)
---------------------------------
-If you want to offer difficulty levels, sim_ceiling is the easiest
-knob to expose:
-  Easy:   sim_ceiling=100    (near-instant, weakish)
-  Medium: sim_ceiling=400
-  Hard:   sim_ceiling=800    (training-level)
-  Expert: sim_ceiling=1600   (worth the extra think time for tough
-                              positions; deadline still applies)
+DIFFICULTY TIERS — MEASURED (L4, Sep 7 2026, updated from §19)
+--------------------------------------------------------------
+Measured end-to-end over the WebSocket (~480 sims/sec), 3 moves per
+tier, every tier reached its ceiling 3/3:
+
+    label      ceiling  clock    measured sims        per move
+    Easy         800    3+2      803, 815, 813        1.2-1.6s
+    Standard    2000    5+3      2003, 2018, 2043     3.1-3.9s
+    Strong      8000    10+10    8003, 8011, 8012     13.7-17.8s
+
+⚠️  LOAD-BEARING RULE: the increment is what makes a tier hold, not
+    the base. Strong spends ~17s per move but earns 10s back, so its
+    clock drains ~7s/move — the budget stays above the ceiling cost
+    deep into the game. With a 5s increment the tier decays around
+    move 20 and silently stops reaching 8000.
+
+    Rule of thumb: increment ≥ about half the per-move cost of the
+    ceiling you're targeting. Otherwise the DEADLINE fires before the
+    sim ceiling and the UI's advertised strength lies.
 
 Alternative: expose CHECKPOINT as difficulty. models/az_iter100.pt
 is dramatically weaker than models/az_iter1040.pt. Full list in
@@ -1006,12 +1077,22 @@ C3 — Engine.descend() race  (commit 43ea9d7)
   costs nothing and helped surface the bug in the first place.
 
 C5 — Python encoder zeroes 100 of 115 planes  (commit f8e67b6)
-  Confirmed catastrophic via verify_c5_strength_cost.py against
-  az_iter1040:
+  Measured catastrophic ON INPUTS via verify_c5_strength_cost.py
+  against az_iter1040:
     value |delta| mean:  0.4176 on [-1,1] scale
     top-1 policy agree:  25.0%
     top-5 overlap mean:  42.1%
     KL(full || zero):    0.5164 mean
+
+  ⚠️  CORRECTION (per §16 H2H): input divergence is real and large,
+      but OUTCOMES at 800 sims are inconclusive (§16's paired 20-game
+      A/B: 8-12 for FULL, inside 2-sigma noise). MCTS at that sim
+      count apparently substantially repairs a badly wrong prior.
+      Correct claim: "catastrophic on inputs, unproven on outcomes."
+      Directional case for the fix still holds — matches training
+      distribution, 7-10x faster, C++ is the canonical encoder —
+      but the strength magnitude is unproven at n=20.
+
   Fixed in the Modal images (web_play.py + profile_mcts.py):
     .apt_install("g++", "build-essential")
     .pip_install(..., "pybind11")
@@ -1027,9 +1108,11 @@ C5 — Python encoder zeroes 100 of 115 planes  (commit f8e67b6)
   then. Not blocking web deploy.
 
 C2 — halfmove uint8 truncation
-  Not touched. Logged in memory as a training-lineage decision.
-  Would change what plane 114 means across every checkpoint, so
-  it's a deliberate call rather than an obvious fix.
+  Inference half resolved incidentally by the C5 fix: the C++
+  encoder leaves plane 114 at 0, matching training buffers, so the
+  train/serve mismatch disappears once C++ is live. What remains is
+  "the plane is dead capacity everywhere," which is a
+  training-lineage decision logged in memory.
 
 RE-MEASURED PROFILE (L4, C++ built, az_iter1040 — supersedes §14.B)
 -------------------------------------------------------------------
