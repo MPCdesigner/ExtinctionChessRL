@@ -792,6 +792,13 @@ class MCTSNode:
         self.value_sum = 0.0      # from WHITE's perspective
         self.is_expanded = False
         self.virtual_loss = 0
+        # T3 invariant: root Dirichlet noise gets applied exactly once per
+        # node acting as a root. mcts_search checks + sets this in the
+        # reuse path so chunk-based callers (Engine wrapper's ponder loop)
+        # don't re-flatten priors on every 30-sim chunk. Fresh MCTSNodes
+        # and promoted children are new objects, so they start False and
+        # correctly get noise once when they first act as root.
+        self.noise_applied = False
 
     def q_from_parent(self):
         vc = self.visit_count + self.virtual_loss
@@ -1077,11 +1084,17 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
         root_value = white_q if current == Color.WHITE else -white_q
 
         # Add fresh Dirichlet noise to root's children priors (skipped for
-        # deterministic paths like benchmarks where noise_weight=0)
-        if dirichlet_alpha > 0 and noise_weight > 0:
+        # deterministic paths where noise_weight=0). T3 guard: apply once
+        # per root, not once per mcts_search call — chunk-based callers
+        # (Engine wrapper's ponder loop, 30 sims per chunk) would otherwise
+        # re-flatten priors on every chunk. (1 - noise_weight)^chunks
+        # geometrically decays the policy head's prior to ~uniform.
+        if (dirichlet_alpha > 0 and noise_weight > 0
+                and not root.noise_applied):
             noise = np.random.dirichlet([dirichlet_alpha] * len(root.children))
             for child, n in zip(root.children, noise):
                 child.prior = (1 - noise_weight) * child.prior + noise_weight * n
+            root.noise_applied = True
 
         # Skip the sim loop entirely if we already have enough visits
         if sims_done >= num_simulations:
@@ -1128,6 +1141,19 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
                         win_idx += 1
                     else:
                         result.append((m, 0))
+                # T2: give the returned root nominal visits so callers'
+                # "play once sims >= ceiling" loops fire immediately on
+                # a forced win instead of burning the entire deadline.
+                # Set value_sum alongside so the node stays self-consistent
+                # (currently harmless because reuse-path guards on
+                # is_expanded, children != [], visit_count > 0 block the
+                # divide, but future-proofs against any of those relaxing).
+                # value_sum is WHITE-perspective (see MCTSNode.__init__),
+                # so +N when White is the mover finding the win, -N when
+                # Black is.
+                root.visit_count = num_simulations
+                mover_sign = 1.0 if current == Color.WHITE else -1.0
+                root.value_sum = mover_sign * float(num_simulations)
                 if return_root:
                     return result, 1.0, root
                 return result, 1.0
