@@ -70,12 +70,15 @@ CHECKPOINT = "az_iter1040.pt"   # briefing §6: latest+strongest. az_iter810.pt
                                 # is the validated pre-regression peak if you
                                 # want stability over peak strength.
 GPU_TIER = "L4"                 # T4 is cheaper but ~2x slower; A10 has headroom
-SIM_CEILING = 800               # briefing §13: training default
+SIM_CEILING = 2000              # default when the client doesn't specify
+MAX_SIM_CEILING = 20000         # hard cap; the clock still bounds a move
 TACTICAL_LEVEL = "basic"        # matches training-time behaviour
 C_PUCT = 2.5
 
 MAX_CONCURRENT_GAMES = 6        # hard cost ceiling
 GAME_TIMEOUT_S = 3600           # a container can never outlive this
+IDLE_TIMEOUT_S = 120            # connected but not playing -> drop the socket,
+                                # otherwise an idle tab holds a GPU
 
 # Origins allowed to call this endpoint. Add your domain before going public;
 # "*" is fine while developing.
@@ -150,8 +153,24 @@ def web():
     def parse_sq(s: str):
         return Position(rank=int(s[1]) - 1, file="abcdefgh".index(s[0]))
 
+    # extinction_chess.py:514 swaps these classes for the C++ ones whenever
+    # _ext_chess is built — which is now always, in this image. The C++ enums
+    # are pybind11 enums whose .value is an INT (PAWN=0..KING=5, WHITE=0,
+    # BLACK=1), NOT the single-char strings the pure-Python enum uses and that
+    # briefing §5 documents. .name is stable across both, so key on that.
+    _LETTER = {"PAWN": "P", "KNIGHT": "N", "BISHOP": "B",
+               "ROOK": "R", "QUEEN": "Q", "KING": "K"}
+
+    def pt_letter(pt) -> str:
+        return _LETTER[pt.name]
+
+    def piece_types():
+        # Both enum flavours expose __members__; plain iteration does not
+        # work on the pybind11 one.
+        return list(PieceType.__members__.values())
+
     def piece_str(p) -> str:
-        return ("w" if p.color == Color.WHITE else "b") + p.piece_type.value
+        return ("w" if p.color == Color.WHITE else "b") + pt_letter(p.piece_type)
 
     def board_json(game):
         rows = []
@@ -169,7 +188,7 @@ def web():
             out.append({
                 "from": sq(m.from_pos),
                 "to": sq(m.to_pos),
-                "promotion": m.promotion.value if m.promotion else None,
+                "promotion": pt_letter(m.promotion) if m.promotion else None,
             })
         return out
 
@@ -178,7 +197,7 @@ def web():
         res = {}
         for color, key in ((Color.WHITE, "white"), (Color.BLACK, "black")):
             counts = game.board.get_piece_count(color)
-            res[key] = {pt.value: counts.get(pt, 0) for pt in PieceType}
+            res[key] = {pt_letter(pt): counts.get(pt, 0) for pt in piece_types()}
         return res
 
     def over_json(game):
@@ -204,6 +223,12 @@ def web():
             "game_over": over_json(game),
         }
 
+    def _clamp(v, lo, hi):
+        try:
+            return max(lo, min(hi, float(v)))
+        except (TypeError, ValueError):
+            return lo
+
     # ── Time budget (ported from tools/play_timed/state.py:359) ─────────────
     def thinking_budget(remaining, base_seconds, increment, delay=0.0):
         base = remaining / 30 + increment          # assume ~30 moves left
@@ -223,6 +248,7 @@ def web():
         await ws.accept()
         game = None
         clocks = {"white": 0.0, "black": 0.0}
+        turn_started = time.monotonic()
         human_color = "white"
         base_s = 300.0
         inc_s = 3.0
@@ -230,7 +256,7 @@ def web():
 
         def move_key(m):
             return (sq(m.from_pos), sq(m.to_pos),
-                    m.promotion.value if m.promotion else None)
+                    pt_letter(m.promotion) if m.promotion else None)
 
         async def engine_turn():
             """Wait for sim ceiling or deadline, then play the engine's move."""
@@ -258,14 +284,33 @@ def web():
             result = None
             last_sent = -1
             while True:
-                snap = engine.get_status_snapshot()
                 cand = engine.get_current_result()
 
                 if cand is not None and move_key(cand["move"]) in legal_now:
                     result = cand
-                    if (snap["sim_count"] >= sim_ceiling
+                    # Use the count carried INSIDE the result, not a separate
+                    # get_status_snapshot() call. Two reads can straddle a
+                    # worker publish: the old deep root's sim_count paired
+                    # with the freshly-descended shallow root's move, so the
+                    # engine plays instantly believing it searched thousands
+                    # of nodes. Pondering makes that straddle the common case.
+                    have = cand["search_snapshot"]["sim_count"]
+                    rv = cand["search_snapshot"].get("root_value", 0.0)
+
+                    # mcts_search's root tactical shortcut returns a FRESH
+                    # MCTSNode (visit_count 0) with root_value 1.0 when it
+                    # finds a forced win, so sim_count is 0 and the ceiling
+                    # can never be met — the engine would sit out its whole
+                    # time budget before playing a move it already knows.
+                    # More search cannot improve a forced win.
+                    forced_win = (have == 0 and abs(rv) >= 0.999
+                                  and time.monotonic() - started > 0.75)
+
+                    if (have >= sim_ceiling or forced_win
                             or time.monotonic() >= deadline):
                         break
+
+                snap = engine.get_status_snapshot()
 
                 if time.monotonic() >= hard_deadline:
                     break
@@ -290,6 +335,12 @@ def web():
             mv = result["move"]
             snapshot = result["search_snapshot"]
 
+            # Capture the mover BEFORE the move. make_move does NOT advance
+            # current_player on a game-ending move (verified: 0/12 game-ending
+            # moves flip it), so inferring the mover afterwards inverts the
+            # evaluation sign on exactly the final move of every game.
+            mover = game.current_player
+
             if not game.make_move(mv):
                 # Should be unreachable given the legality guard above, but a
                 # silent False here is what desynced the client before.
@@ -302,29 +353,66 @@ def web():
                 "type": "engine_move",
                 "from": sq(mv.from_pos),
                 "to": sq(mv.to_pos),
-                "promotion": mv.promotion.value if mv.promotion else None,
+                "promotion": pt_letter(mv.promotion) if mv.promotion else None,
                 "analysis": {
                     "sims": snapshot["sim_count"],
-                    # root_value is from the mover's perspective; flip so the
-                    # client can always display it as "white is winning".
-                    "value": (snapshot["root_value"]
-                              if game.current_player == Color.BLACK
+                    # root_value is in the MOVER's perspective; convert to a
+                    # constant white-perspective scalar for display.
+                    "value": (snapshot["root_value"] if mover == Color.WHITE
                               else -snapshot["root_value"]),
                     "seconds": round(spent, 2),
                 },
             })
             await ws.send_json(state_msg(game, clocks, human_color))
 
+        def over(game):
+            return game is not None and getattr(game, "game_over", False)
+
         try:
             while True:
-                msg = await ws.receive_json()
+                # The WebSocket IS the container's lifetime, so an unbounded
+                # receive means one abandoned tab holds a GPU until
+                # GAME_TIMEOUT_S. Bound the wait by the human's own clock —
+                # which is also the correct chess behaviour: run out of time
+                # while thinking and you lose on time.
+                if game is not None and not over(game):
+                    left = clocks[human_color] - (time.monotonic() - turn_started)
+                    budget = max(1.0, left) + 5.0        # small network grace
+                else:
+                    budget = IDLE_TIMEOUT_S              # connected, not playing
+
+                try:
+                    msg = await asyncio.wait_for(ws.receive_json(), timeout=budget)
+                except asyncio.TimeoutError:
+                    if game is not None and not over(game):
+                        game.game_over = True
+                        engine.stop()
+                        clocks[human_color] = 0.0
+                        m = state_msg(game, clocks, human_color)
+                        m["game_over"] = {
+                            "winner": "black" if human_color == "white" else "white",
+                            "reason": "timeout",
+                        }
+                        try:
+                            await ws.send_json(m)
+                        except Exception:
+                            pass
+                    await ws.close()
+                    return
+
                 kind = msg.get("type")
 
                 if kind == "new_game":
                     human_color = msg.get("human_color", "white")
-                    base_s = float(msg.get("base", 300))
-                    inc_s = float(msg.get("increment", 3))
-                    sim_ceiling = int(msg.get("sim_ceiling", SIM_CEILING))
+                    if human_color not in ("white", "black"):
+                        human_color = "white"
+                    # The client picks the time control, and this endpoint is
+                    # public — clamp so a crafted message can't park a GPU on
+                    # a giant clock or an unreachable ceiling.
+                    base_s = _clamp(msg.get("base", 300), 30, 900)
+                    inc_s = _clamp(msg.get("increment", 3), 0, 30)
+                    sim_ceiling = int(_clamp(msg.get("sim_ceiling", SIM_CEILING),
+                                             50, MAX_SIM_CEILING))
 
                     game = ExtinctionChess()
                     clocks = {"white": base_s, "black": base_s}
@@ -350,7 +438,7 @@ def web():
                     chosen = None
                     for m in game.get_legal_moves():
                         got = (sq(m.from_pos), sq(m.to_pos),
-                               m.promotion.value if m.promotion else None)
+                               pt_letter(m.promotion) if m.promotion else None)
                         if got == want:
                             chosen = m
                             break
@@ -401,6 +489,14 @@ def web():
 
                 elif kind == "ping":
                     await ws.send_json({"type": "pong"})
+
+                # A finished game must not keep holding the container. The
+                # client opens a fresh socket for its next game, so closing
+                # here costs nothing and releases the GPU immediately.
+                if over(game):
+                    engine.stop()
+                    await ws.close()
+                    return
 
         except WebSocketDisconnect:
             pass
