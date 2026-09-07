@@ -13,11 +13,19 @@ app = modal.App("extinction-chess-profile")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("torch", "numpy")
-    .add_local_dir("src", remote_path="/root/src",
+    # C++ toolchain for _ext_chess — without it, state_encoder falls back
+    # to the Python encoder that zeroes 100 of 115 input planes (C5).
+    # Previous profile numbers in briefing §14.B were measured WITHOUT this
+    # build step and reflect a handicapped model; re-measure after this
+    # change to get real production sims/sec.
+    .apt_install("g++", "build-essential")
+    .pip_install("torch", "numpy", "pybind11")
+    .add_local_dir("src", remote_path="/root/src", copy=True,
+                   ignore=lambda p: ".venv" in str(p) or "__pycache__" in str(p)
+                   or str(p).endswith(".pyd") or str(p).endswith(".so"))
+    .add_local_dir("tools", remote_path="/root/tools", copy=True,
                    ignore=lambda p: ".venv" in str(p) or "__pycache__" in str(p))
-    .add_local_dir("tools", remote_path="/root/tools",
-                   ignore=lambda p: ".venv" in str(p) or "__pycache__" in str(p))
+    .run_commands("cd /root/src && python setup.py build_ext --inplace")
 )
 
 models_volume = modal.Volume.from_name("extinction-chess-models")

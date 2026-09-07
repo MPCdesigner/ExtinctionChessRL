@@ -43,13 +43,23 @@ app = modal.App("extinction-chess-web")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("torch", "numpy", "fastapi[standard]")
+    # C++ toolchain for _ext_chess (see build step at end of image).
+    .apt_install("g++", "build-essential")
+    .pip_install("torch", "numpy", "fastapi[standard]", "pybind11")
     # Mirror the repo layout: engine.py resolves src/ as ../../src relative
     # to itself, so tools/ and src/ must sit side by side.
-    .add_local_dir("src", remote_path="/root/src",
+    .add_local_dir("src", remote_path="/root/src", copy=True,
+                   ignore=lambda p: ".venv" in str(p) or "__pycache__" in str(p)
+                   or str(p).endswith(".pyd") or str(p).endswith(".so"))
+    .add_local_dir("tools", remote_path="/root/tools", copy=True,
                    ignore=lambda p: ".venv" in str(p) or "__pycache__" in str(p))
-    .add_local_dir("tools", remote_path="/root/tools",
-                   ignore=lambda p: ".venv" in str(p) or "__pycache__" in str(p))
+    # Build _ext_chess so state_encoder.encode_board uses the C++ path.
+    # Without this, the Python fallback zeroes 100 of 115 planes and the
+    # net plays essentially a different model (measured: 25% top-1 policy
+    # agreement with the real trained model). See briefing §14.C5.
+    # copy=True on add_local_dir above is required for run_commands to
+    # see the sources at image-build time.
+    .run_commands("cd /root/src && python setup.py build_ext --inplace")
 )
 
 models_volume = modal.Volume.from_name("extinction-chess-models", create_if_missing=True)
