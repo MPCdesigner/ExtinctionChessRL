@@ -584,6 +584,21 @@ class TimedMatchApp:
         mcts_best = result["move"]
         snap = result.get("search_snapshot") or {}
 
+        # Belt for the descend-race in engine.py: even with the engine-side
+        # invalidation + skip-publish, defend against ANY stale result by
+        # requiring the returned move to be legal in the CURRENT position.
+        # A stale result comes from the previous root (opposite side to
+        # move) — never legal now. See web_integration_briefing 14.C3.
+        legal_moves = self.state.game.get_legal_moves()
+        if not any(self._same_move(mcts_best, m) for m in legal_moves):
+            remaining = self.state.model_clock_display()
+            retry_delay = max(0.05, min(1.0, remaining * 0.3))
+            self.status_message = (
+                f"Engine returned stale move — waiting for descent "
+                f"(retry in {retry_delay:.2f}s, {remaining:.1f}s left)")
+            self._model_move_deadline = time.monotonic() + retry_delay
+            return
+
         # Advanced-shortcut post-filter: if MCTS wants to play something
         # that hangs mate-in-1 AND a safe alternative exists, prefer safe.
         # Silent no-op in basic/off modes.

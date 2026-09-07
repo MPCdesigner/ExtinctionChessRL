@@ -205,6 +205,7 @@ class Engine:
         """Begin pondering from `game`. Discards any prior root."""
         with self._req_lock:
             self._pending_requests.append(("start", self._snapshot_game(game)))
+        self._invalidate_published()
         self._interrupt_chunk.set()
 
     def descend(self, played_move: Move) -> None:
@@ -216,13 +217,29 @@ class Engine:
         """
         with self._req_lock:
             self._pending_requests.append(("descend", played_move))
+        # Race fix: any read of get_current_result between now and the
+        # worker's descent processing would return data describing the
+        # PREVIOUS root (a move for the wrong side). Invalidate first;
+        # the worker will publish fresh data once it consumes the queue.
+        # See web_integration_briefing section 14.C3.
+        self._invalidate_published()
         self._interrupt_chunk.set()
 
     def stop(self) -> None:
         """Stop searching. Engine transitions to IDLE."""
         with self._req_lock:
             self._pending_requests.append(("stop", None))
+        self._invalidate_published()
         self._interrupt_chunk.set()
+
+    def _invalidate_published(self) -> None:
+        """Clear the published result — used when queuing a request that
+        will change what "the current root" means. Get callers see None
+        until the worker publishes the post-request state."""
+        with self._result_lock:
+            self._latest_visits = []
+            self._latest_root_value = 0.0
+            self._latest_root_sim_count = 0
 
     def shutdown(self) -> None:
         """Terminate the worker thread (on tool exit)."""
@@ -352,7 +369,18 @@ class Engine:
                 continue
 
             self._w_root = new_root
-            self._publish_result(move_visits, root_value, new_root.visit_count)
+            # If a request arrived DURING this chunk (interrupted or not),
+            # skip publishing — this chunk's data describes the pre-request
+            # root, which no longer matches what main will treat as current.
+            # The request handler will publish fresh data next iteration.
+            # Holding req_lock across the check + publish keeps a descent
+            # from sneaking in between them and overwriting its invalidation.
+            # Lock order everywhere else is also req → result, so no risk
+            # of deadlock.
+            with self._req_lock:
+                if not self._pending_requests:
+                    self._publish_result(move_visits, root_value,
+                                         new_root.visit_count)
 
     def _process_pending_requests(self) -> None:
         """Consume all pending requests. Called between chunks."""
