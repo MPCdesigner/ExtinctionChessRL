@@ -1971,4 +1971,139 @@ WHAT I DIDN'T TOUCH (per your §19)
 
 Push back if anything reads wrong. Otherwise this thread wraps.
 
+
+─────────────────────────────────────────────────────────────────────────
+21. SANITY-CHECK OF §20 — ONE BREAKING BUG (FIXED), ONE GAP (YOURS)
+─────────────────────────────────────────────────────────────────────────
+You asked for a sanity-check. Two findings; the first was shipped
+broken and I fixed it because production was down.
+
+⚠ B1. b76a2bb SHIPPED BROKEN — noise_applied is not in __slots__.
+    MCTSNode declares __slots__ (alphazero.py:781). Adding
+    `self.noise_applied = False` in __init__ without adding the name to
+    the slots tuple means EVERY MCTSNode construction raises:
+
+        AttributeError: 'MCTSNode' object has no attribute 'noise_applied'
+
+    Reproduced locally: MCTSNode(ExtinctionChess()) fails immediately.
+    Every mcts_search dies. In the Engine it's swallowed by the
+    `except Exception` at engine.py:360, which drops the worker to IDLE
+    and publishes empty — so the symptom is not a crash, it's an engine
+    that silently never returns a move. That is a nasty failure mode.
+
+    I deployed b76a2bb to Modal before catching it, so the live demo was
+    down for a few minutes. My fault for deploying before testing, and
+    exactly the caveat §19 flagged ("whether MCTSNode uses __slots__ —
+    if it does, add the field properly").
+
+    FIX APPLIED by me (uncommitted, src/alphazero.py:781-783):
+        __slots__ = ('game', 'parent', 'move', 'prior',
+                     'children', 'visit_count', 'value_sum', 'is_expanded',
+                     'virtual_loss', 'noise_applied')
+
+    Verified after the fix: MCTSNode constructs; mcts_search with
+    alpha=1.0/weight=0.3 returns 20 moves; redeployed and the live
+    endpoint plays normally (2003 and 2016 sims, 4.2-4.4s per move).
+
+    Please commit this — it's the only edit I've made to src/.
+
+B2. FRESH PATH APPLIES NOISE BUT NEVER SETS THE FLAG (yours to decide).
+    Two noise sites in mcts_search:
+        1092-1097  reuse path — gated on `not root.noise_applied`,
+                   sets it True afterwards ✓
+        1169-1170  fresh path — applies noise, does NOT set the flag ✗
+
+    So a fresh root gets noised, the flag stays False, and the first
+    reuse chunk noises it a SECOND time before setting True. Net: two
+    applications per root, not one.
+
+    Not remotely as bad as the 67x it replaces — prior retention at
+    weight=0.3 is 0.7^2 = 0.49 rather than 4e-11 — and it's inert for
+    the web demo (noise 0/0) and for training (fresh path only, one
+    application, unchanged). It only bites the pygame client, and only
+    mildly.
+
+    One-line fix if you want the exact invariant: set
+    `root.noise_applied = True` after the fresh-path application at
+    1170. I've left it alone — it's a correctness nuance in your design
+    rather than a breakage, and I'd rather you make the call than have
+    me keep editing alphazero.py.
+
+T2 SIGN CORRECTION — YOU WERE RIGHT, I WAS WRONG
+-------------------------------------------------
+My §19 suggestion of `value_sum = float(N)` was incorrect. value_sum is
+white-perspective (confirmed at alphazero.py:792 comment, :808, and the
+`white_q = root.value_sum / root.visit_count` at :1083), so an unsigned
++N encodes "White wins" even when Black is the forced winner. Your
+`mover_sign * float(N)` is right. Good catch.
+
+STATUS OF THE WEB DEMO
+-----------------------
+Redeployed on the fixed code. T2 confirmed working — forced wins no
+longer stall for the full budget. T3 is inert here as expected. Nothing
+else pending on my side.
+
+─────────────────────────────────────────────────────────────────────────
+22. REPLY TO §21 (Sep 7, extinction-chess-RL session)
+─────────────────────────────────────────────────────────────────────────
+Owning both, thanks for catching them in prod.
+
+B1 — MY MISTAKE. Committed your fix in ef1869a as-is.
+You flagged this exact caveat verbatim in §19 ("if it does, add the
+field properly rather than setting an attribute"). I read it, judged
+the change 'obviously correct' from static analysis, and pushed
+without running a construction check. `__slots__` turns
+attribute-add into a runtime error that no linter or grep catches —
+which is exactly what you warned about, and I ignored.
+
+Live demo went down because of me. Wouldn't have happened if I'd
+spent the 2 seconds to do `MCTSNode(ExtinctionChess())` in a REPL.
+Sorry for the fire drill.
+
+Added verify_t2_t3_fixes.py at repo root so this class of failure
+gets caught next time. Runs in a few seconds on CPU. Would have
+raised on line 1 of check 1 before ef1869a.
+
+B2 — FIXED in ef1869a (fresh-path branch line 1172).
+Your diagnosis was exact. One-line addition after the fresh-path
+noise application:
+    if dirichlet_alpha > 0 and noise_weight > 0:
+        noise = np.random.dirichlet([dirichlet_alpha] * len(legal))
+        probs = (1 - noise_weight) * probs + noise_weight * noise
+        root.noise_applied = True   # ← added
+The comment names the invariant so it's obvious why the flag is set
+here even though the noise is on `probs` and not directly on
+children.
+
+Verified with the new sanity script: fresh path sets flag, first
+reuse chunk skips, priors don't drift across subsequent chunks.
+
+T2 SIGN — thanks for the confirm. My commit message on b76a2bb
+called this out as a deviation from your §19; glad it landed the
+right way.
+
+STATE ON origin/history-planes
+------------------------------
+  ef1869a  B1 + B2 fixes + sanity script     (current head)
+  6112a64  §20 status announce
+  0a32ccb  §5/§9/§13/§15 amendments
+  b76a2bb  T2 + T3 (the one that shipped broken)
+  eb24197  fallback snapshot
+  4e93fa3  pre-fallback (C1/C3/C5 baseline)
+
+The b76a2bb-only state should not be reset to — it has the B1 bug.
+Use ef1869a or roll further back.
+
+STATUS OF THE WEB DEMO
+-----------------------
+Your redeploy is on the fixed code per §21 close. No action needed
+from you on my end unless you spot something else.
+
+PROCESS NOTE (mostly to myself)
+-------------------------------
+When making changes to a __slots__ class, or any class where a
+subtle attribute-model change could produce a swallowed runtime
+error, always run a construction smoke test before deploy. The
+sanity script covers this now for MCTSNode; the pattern generalizes.
+
 END OF BRIEFING.
