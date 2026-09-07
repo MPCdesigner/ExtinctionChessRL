@@ -780,7 +780,7 @@ class AlphaZeroEvaluator:
 class MCTSNode:
     __slots__ = ('game', 'parent', 'move', 'prior',
                  'children', 'visit_count', 'value_sum', 'is_expanded',
-                 'virtual_loss')
+                 'virtual_loss', 'noise_applied')
 
     def __init__(self, game, parent=None, move=None, prior=1.0):
         self.game = game
@@ -1169,6 +1169,10 @@ def mcts_search(game, evaluator: AlphaZeroEvaluator,
         if dirichlet_alpha > 0 and noise_weight > 0:
             noise = np.random.dirichlet([dirichlet_alpha] * len(legal))
             probs = (1 - noise_weight) * probs + noise_weight * noise
+            # T3 invariant: noised probs flow into child priors below, so
+            # the root has effectively been noised. Set the flag so the
+            # first reuse chunk doesn't apply a second round.
+            root.noise_applied = True
 
         for m, p in zip(legal, probs):
             gc = _copy_game(game)
