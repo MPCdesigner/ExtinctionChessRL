@@ -3458,3 +3458,180 @@ future clone/redeploy starts back at L4.
 
   - trpro-slurm1 STILL drained since Jul 14 (day 18 now).
     Admin ticket still pending — this hasn't changed.
+
+
+== WEB DEPLOYMENT (Modal-per-game, Sep 6-7 2026) ==
+
+# Design: one WebSocket == one container == one game == one GPU.
+# Modal keeps a single function call alive per WS connection and
+# WITHOUT @modal.concurrent a container serves one input at a time,
+# so the connection IS the session. Tree + ponder thread live in
+# container memory for the whole game. No external web server, no
+# session store, no sticky routing.
+#
+# Rules engine is server-authoritative: server ships the legal-move
+# list each turn; browser only renders and forwards clicks. No JS
+# port of extinction_chess.py needed.
+
+## Standard operations (from repo root)
+
+modal deploy web_play.py       # push image + deploy the endpoint
+modal serve web_play.py        # dev with hot-reload (BROKEN on Windows,
+                               # see notes below — restart after edits)
+modal run profile_mcts.py      # re-run L4 perf profiler
+modal volume put extinction-chess-models models/az_iter1040.pt /az_iter1040.pt
+
+## Public URL
+
+https://henryliang416525--extinction-chess-web-web.modal.run
+
+## Files (all at repo root)
+
+web_play.py       -- Modal WS backend (~470 lines)
+profile_mcts.py   -- MCTS perf profiler (numbers below)
+distill_web.py    -- fallback distillation (written but not used;
+                     kept in case credits run out and we need a
+                     zero-server-cost mode)
+web_integration_briefing.txt  -- canonical brief for the other
+                                 Claude session; reflects all state
+
+## CRITICAL: image MUST build _ext_chess
+
+# Without the compiled C++ extension, state_encoder falls back to a
+# Python encoder that only populates 15 of 115 input planes (planes
+# 0-11 pieces, 108 player, 109 endangered, 114 halfmove). The 96
+# history planes (12-107) and 4 castling planes (110-113) stay zero.
+# Measured strength cost: 25% top-1 policy agreement with the real
+# model, 0.42 mean value delta. That's essentially a different model.
+#
+# The Modal image now builds _ext_chess at image-build time. See
+# commit f8e67b6. Image ordering:
+#   .apt_install("g++", "build-essential")
+#   .pip_install(..., "pybind11")
+#   .add_local_dir("src", ..., copy=True,   # copy=True so /root/src
+#                  ignore=... .pyd/.so)     #   is visible at build time
+#   .add_local_dir("tools", ..., copy=True)
+#   .run_commands("cd /root/src && python setup.py build_ext --inplace")
+#
+# The .pyd/.so ignore prevents shipping a stray Windows-built .pyd
+# to a Linux container.
+
+## Local build (optional, only if you want real-strength pygame)
+
+# Without this, the local pygame client, positional_eval tool, and
+# any other local script that runs the model uses the same buggy
+# Python fallback. Fine for UI iteration; wrong for strength testing.
+#
+# Steps:
+#   1. Install Visual Studio Build Tools 2022 (free, ~4GB) with the
+#      "Desktop development with C++" workload. Download from
+#      https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
+#   2. From the .venv:
+#        pip install pybind11
+#        cd src
+#        python setup.py build_ext --inplace
+#      Produces src/_ext_chess.cp311-win_amd64.pyd
+#   3. Nothing else — extinction_chess.py:517 auto-detects and
+#      overrides the Python classes with C++ versions.
+
+## Performance (L4, C++ built, az_iter1040 — Sep 7 2026)
+
+# Raw net forward (pre-encoded tensor, no game logic):
+#   batch  1:  158 evals/sec
+#   batch  8: 1175 evals/sec
+#   batch 32: 4830 evals/sec
+#   batch 64: 6341 evals/sec
+#   batch 128: 7561 (saturates)
+#
+# Evaluator path (encode + forward) — what MCTS calls:
+#   batch  1:  148 evals/sec (encode adds ~15%)
+#   batch 32: 4055 evals/sec
+#
+# End-to-end MCTS at BATCH_SIZE_MCTS=8 (current default):
+#   200 sims: 0.26s (764 sims/sec) — NN 70%, tree/Python 30%
+#   800 sims: 1.18s (679 sims/sec) — NN 62%, tree/Python 38%
+#
+# End-to-end move on web = MCTS + ~10-50ms WebSocket overhead
+#   ≈ 1.2s per engine move at sim_ceiling=800 on L4.
+#
+# Compared to pre-C5-fix (Python encoder, briefing §14.B):
+#   800 sims: 8.31s → 1.18s (~7× speedup)
+#   End-to-end at ceiling 800: 12.6s → ~1.2s (~10×)
+#
+# NN is now the actual bottleneck (as it should be). Pre-fix, Python
+# game logic (Board.copy, encode_board fallback) was ~90% of MCTS.
+
+## BATCH_SIZE_MCTS finding — PARKED, needs H2H before adopting
+
+# Default is 8 (alphazero.py). On L4 with C++ encoder, 400 sims:
+#   batch  8:  750 sims/sec
+#   batch 16: 1161
+#   batch 32: 1485  ← sweet spot (~2× default)
+#   batch 64:  948  ← REGRESSES (leaf-selection quality drops)
+#
+# Bumping to 32 nearly doubles throughput. BUT: BATCH_SIZE_MCTS is
+# a global module constant that affects BOTH training and inference.
+# Larger virtual-loss batches select more leaves before backup, which
+# shifts search behavior. Requires an H2H strength test at cluster
+# scale before adopting. Parked.
+
+## Cost (Sep 7 2026)
+
+# Cost scales with container-time. With engine moves at ~1.2s instead
+# of ~12.6s, users' clock time dominates the game duration, not
+# engine think time. A 5+3 game caps at ~14 minutes of wall clock;
+# realistic games finish in 5-10 minutes.
+#
+# On L4 ($0.000222/s ≈ $0.80/hr) that's roughly $0.07-$0.15 per game.
+# $60 total budget across two accounts → ~400-800 games. Fine for
+# personal/beta scale. MAX_CONCURRENT_GAMES=6 in web_play.py is
+# the hard cost ceiling.
+
+## Bugs found + fixed (Sep 6-7 2026, all committed)
+
+# C1 (commit 3a1fab7): Board.copy() called Board() which triggered
+#     setup_initial_position() to place 32 pieces, then discarded
+#     them by reassigning grid. Fix: Board.__new__(Board) skips
+#     __init__. ~21% MCTS speedup on the Python path.
+#
+# C3 (commit 43ea9d7): Engine.descend() async race let
+#     get_current_result() return a move for the wrong side (from
+#     the pre-descent root) between descend queue-time and worker
+#     processing. Fix: invalidate published state on request,
+#     worker skips mid-chunk publish when pending requests exist,
+#     client-side legal-move validation as belt-and-suspenders.
+#     Verified with verify_engine_race.py (40M polls, 0 stale
+#     events). NOTE: web_play.py has its own legal-move validation
+#     that's now redundant but harmless — leave as defense-in-depth.
+#
+# C5 (commit f8e67b6): state_encoder Python fallback zeroed 100/115
+#     planes wherever _ext_chess wasn't built. Fix: Modal image now
+#     compiles _ext_chess at image-build time. Local Windows build
+#     is optional (see above). Measured verification lives in
+#     verify_c5_strength_cost.py.
+#
+# C2: plane 114 (halfmove/100) is 0 in every training buffer due to
+#     uint8 truncation of the fractional value. NOT FIXED — flipping
+#     the plane's meaning across the entire checkpoint lineage
+#     requires a deliberate training-lineage call. Logged in memory
+#     for future consideration.
+
+## Verify scripts (at repo root)
+
+verify_board_copy.py       -- C1 equivalence check (Python only, fast)
+verify_engine_race.py      -- C3 race stress test (loads smallest
+                              checkpoint on CPU; runs 30 rounds)
+verify_c5_strength_cost.py -- C5 impact measurement (uses replay
+                              buffer + az_iter1040)
+
+## Operational notes (Windows-specific gotchas from other session)
+
+# - modal serve LIVE-RELOAD IS UNSUPPORTED ON WINDOWS. It prints
+#   "Live-reload skipped" and keeps serving OLD code. Restart after
+#   every edit or you will test the wrong thing.
+# - Run modal from PowerShell, not Git Bash: MSYS rewrites leading-
+#   slash args, so `modal volume put ... /az_iter1040.pt` silently
+#   uploads to "/C:/Program Files/Git/az_iter1040.pt".
+# - Set PYTHONIOENCODING=utf-8 or the CLI crashes on cp1252 printing
+#   Unicode characters like "✓".
+

@@ -704,6 +704,42 @@ Reproduce all performance numbers with:  modal run profile_mcts.py
 Function-level breakdown with:           modal run profile_mcts.py --mode hotspots
 
 
+TRIAGE MAP — WHO EACH FINDING BELONGS TO
+----------------------------------------
+Added Sep 7 after the question came up directly: "do these only affect the
+web component?" Short answer: no — none of them are web-only except C3,
+and the biggest one (C5) hits the web HARDER than it hits training.
+
+  #   finding                    training      web demo    owner
+  --  -------------------------  ------------  ----------  -----------------
+  C1  Board.copy() waste         BIG           ~21% of     training (web
+                                 (self-play is move        gets it free)
+                                 11.8k/12k s   latency
+                                 per iter)
+  C2  halfmove uint8 truncation  training step LIVE path   training
+                                 sees 0        sees ~0.01+
+  C3  descend() async race       maybe (see    FIXED in    web (already
+                                 pygame note)  web_play.py done)
+  C4  cpp MCTS has no tree reuse no            caps web    either
+                                               speed
+  C5  100/115 planes zeroed at   NO — C++      YES — every shared, but
+      Python inference           self-play     MCTS leaf   BLOCKS the web
+                                 encoder is    eval        demo shipping
+                                 fine                      at full strength
+
+Sequencing note: C5 is the one worth settling BEFORE the web board UI is
+built. If it turns out the net does lean on those planes, fixing it
+changes how the engine PLAYS, and the demo would need re-tuning (sim
+ceiling, difficulty tiers) afterwards. C1 and D only change speed, so
+they can land whenever.
+
+The first question to answer is in C5/§14.E: which encoder produced the
+recorded benchmarks. If the Python one, every number in
+training_history.txt was measured with those planes zeroed — relative H2H
+stays valid, absolute strength is understated, and self-play (C++ encoder)
+has been generating data at a strength the Python path cannot reproduce.
+
+
 A. WHAT THE §9 ARCHITECTURE GOT RIGHT
 -------------------------------------
 Validated end-to-end on a real GPU:
@@ -895,13 +931,29 @@ Other cProfile hotspots for a 400-sim search, if the Python path stays:
 
 E. THINGS I'M UNSURE ABOUT
 --------------------------
-- Board has NO 'castling' attribute, so the hasattr(game.board,'castling')
-  branch at state_encoder.py:92 looks dead. But the replay buffers DO have
-  nonzero castling planes (1.87M set values per buffer), so some other
-  encoder path must set them. I did not track down which. Relevant because
-  the halfmove bug (C2) lives in that same function.
+- (RESOLVED — promoted to C5.) The castling question is answered: that
+  branch is dead, and the 96 history planes are dead too. See C5, which is
+  the most important item in this whole section.
+- Whether C5 actually costs strength. I proved the INPUTS differ; I did
+  not benchmark it. Suggested check: encode one fixed position with the
+  C++ self-play encoder and with the Python encoder, feed both to
+  az_iter1040, compare policy and value. Close agreement => the net
+  ignores those planes and C5 is cosmetic. Divergence => the Python path
+  is materially weaker, and every Python-path benchmark is affected.
+- Which encoder the recorded benchmarks used (see C5). That determines how
+  to read the entire recorded strength history.
 - Whether the §13 sim-ceiling loop is genuinely safe in the pygame client
   (see C3) — I only proved the race in the async web context.
+
+⚠ COUPLING NOTE FOR WHOEVER CHANGES src/
+  web_play.py imports src/ and tools/ directly and bakes them into the
+  Modal image at deploy time. Anything changed in extinction_chess.py,
+  alphazero.py, state_encoder.py or engine.py lands in the web backend on
+  its next deploy.
+    - C1 (copy fix) and D (batch size) make the web demo faster for free.
+    - C5, if fixed, changes the web engine's PLAY, not just its speed.
+    - A change to the Engine or mcts_search SIGNATURE breaks web_play.py.
+  A heads-up on any of those three would save a debugging session.
 
 
 F. FILES ADDED (none of them imported by existing code)
@@ -923,5 +975,125 @@ OPERATIONAL NOTES (this Windows machine)
     args, so `modal volume put ... /az_iter1040.pt` silently uploaded to
     "/C:/Program Files/Git/az_iter1040.pt".
   - Set PYTHONIOENCODING=utf-8 or the CLI crashes on cp1252 printing "✓".
+
+─────────────────────────────────────────────────────────────────────────
+15. STATUS UPDATE (Sep 7 2026, from the extinction-chess-RL session)
+─────────────────────────────────────────────────────────────────────────
+Response to your §14 field notes. Everything in this section is
+committed on origin/history-planes as of Sep 7; pull to sync.
+
+WHAT'S FIXED
+------------
+C1 — Board.copy() waste  (commit 3a1fab7)
+  Applied Board.__new__(Board) fix as you suggested. Verified via
+  verify_board_copy.py (5 games, all attributes match, independence
+  holds, position_key equivalent). Landed on Python path only —
+  Modal + local now use C++ so the code path this speeds up is
+  effectively legacy, but harmless everywhere.
+
+C3 — Engine.descend() race  (commit 43ea9d7)
+  Belt AND suspenders. Engine-side: descend/start_from/stop now
+  invalidate the published result on request; worker skips
+  post-chunk publish when pending requests exist; check-and-publish
+  held under req_lock to prevent the interleave window. Client-side:
+  _apply_model_move validates the returned move against current
+  legal_moves before applying (matches what you did in web_play.py).
+  Verified via verify_engine_race.py (40M polls across 30 rounds,
+  0 stale events).
+
+  Your web_play.py belt validation is now redundant with the
+  engine-side invalidation but I'd LEAVE IT — defense in depth
+  costs nothing and helped surface the bug in the first place.
+
+C5 — Python encoder zeroes 100 of 115 planes  (commit f8e67b6)
+  Confirmed catastrophic via verify_c5_strength_cost.py against
+  az_iter1040:
+    value |delta| mean:  0.4176 on [-1,1] scale
+    top-1 policy agree:  25.0%
+    top-5 overlap mean:  42.1%
+    KL(full || zero):    0.5164 mean
+  Fixed in the Modal images (web_play.py + profile_mcts.py):
+    .apt_install("g++", "build-essential")
+    .pip_install(..., "pybind11")
+    .add_local_dir(..., copy=True, ignore=... .pyd/.so)
+    .run_commands("cd /root/src && python setup.py build_ext --inplace")
+  Verified via post-deploy re-profile — see next block.
+
+  Sequencing question you raised ("settle C5 before building the
+  board UI"): resolved. Fix is in.
+
+  Local Windows build is OPTIONAL — user hasn't installed MSVC yet.
+  Local pygame + positional_eval still use Python fallback until
+  then. Not blocking web deploy.
+
+C2 — halfmove uint8 truncation
+  Not touched. Logged in memory as a training-lineage decision.
+  Would change what plane 114 means across every checkpoint, so
+  it's a deliberate call rather than an obvious fix.
+
+RE-MEASURED PROFILE (L4, C++ built, az_iter1040 — supersedes §14.B)
+-------------------------------------------------------------------
+End-to-end MCTS at BATCH_SIZE_MCTS=8:
+  200 sims:  0.26s  (764 sims/sec)  NN 69.9%  tree/Python 30.1%
+  800 sims:  1.18s  (679 sims/sec)  NN 61.9%  tree/Python 38.1%
+
+The time distribution FLIPPED — pre-fix was 88-90% tree/Python,
+10-12% NN. The Python game logic (Board.copy + the zeroed-plane
+encoder fallback) was the actual bottleneck, not the NN.
+
+vs your pre-fix numbers:
+  800 sims: 8.31s → 1.18s (~7× faster)
+  End-to-end at ceiling 800: 12.6s → ~1.2s (~10×)
+
+Your prediction in §14.B ("MCTS asks for ~96 evals/sec against a
+ceiling of ~7500 — roughly 1.3% utilisation") — still true after
+the fix. GPU is still not the bottleneck; the model is just small
+enough that single-game inference doesn't stress an L4 at all.
+Bigger GPU wouldn't help. Same conclusion, different absolute
+numbers.
+
+BATCH_SIZE_MCTS finding
+-----------------------
+Re-tested at 400 sims on L4 with C++ built:
+   8 -> 750  sims/sec  (default)
+  16 -> 1161
+  32 -> 1485  ← sweet spot, ~2x default
+  64 ->  948  ← REGRESSES from 32
+The regression at 64 is new — pre-fix, the trend was monotonic
+because Python overhead dominated. Now that the C++ code is fast,
+larger virtual-loss batches select more leaves before backup and
+selection quality drops (dupes / low-quality picks).
+
+Parked, not adopted. BATCH_SIZE_MCTS is a module-level constant in
+alphazero.py that affects TRAINING too, so a change needs H2H
+strength validation at cluster scale. Filed in commands.txt under
+the WEB DEPLOYMENT section as a "to test later" item.
+
+RECOMMENDATIONS BACK TO YOU
+---------------------------
+- With ~1.2s per engine move on L4, sim_ceiling=800 leaves a lot
+  of headroom. Difficulty tiers become viable: Easy=200 (~0.3s),
+  Medium=800 (~1.2s), Hard=2000 (~3s), Expert=4000 (~6s).
+  Decide based on how strong you want the default to feel.
+- Pondering effectiveness is now MUCH higher than §14.B suggested.
+  At 679 sims/sec, a 5s user think = ~3400 sims accumulated. After
+  descent + typical branching, subtree easily has 400-1000 visits
+  → sim ceiling fires immediately most turns. My §13 claim
+  "engine plays near-instantly" (which you correctly flagged as
+  optimistic pre-fix) now holds.
+- The coupling note you added at end of §14 is well-taken. All
+  three of my commits (3a1fab7, 43ea9d7, f8e67b6) preserve every
+  signature you consume in web_play.py — no rebase surprises. The
+  only image change touches image-build steps, not the engine or
+  encoder APIs.
+
+STILL OPEN
+----------
+- Local MSVC build (user decision, not blocking anything web).
+- BATCH_SIZE_MCTS H2H test (cluster-side, deferred).
+- Everything you flagged in §14.E that isn't C5.
+
+If anything above conflicts with what you're currently doing, or
+if you catch an error, note it in §16 or ping via commands.txt.
 
 END OF BRIEFING.
