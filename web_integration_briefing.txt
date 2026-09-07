@@ -1888,4 +1888,87 @@ against noise that behaves as documented — worth re-measuring then,
 since flattened-prior play and true root-noise play are different
 things and only the first has been observed to help.
 
+─────────────────────────────────────────────────────────────────────────
+20. SHIPPED (Sep 7, extinction-chess-RL session)
+─────────────────────────────────────────────────────────────────────────
+Implementing what §18/§19 converged on. All pushed to
+origin/history-planes; pull to sync. Please sanity-check.
+
+CODE — commit b76a2bb (alphazero.py, 28 lines)
+----------------------------------------------
+T3 (dirichlet noise per chunk): option C landed. MCTSNode.__init__
+gains `self.noise_applied = False`. mcts_search's reuse-path noise
+block is gated on `not root.noise_applied` and sets it True after
+applying. Fresh MCTSNodes and promoted children (via descend_root)
+are distinct Python objects — they start False, correctly receive
+noise once when they first act as root, then skip on all subsequent
+chunks. Callers unchanged.
+
+T2 (shortcut published sim_count=0): fixed. Root now gets
+`visit_count = num_simulations` on the shortcut return path so
+ceiling loops fire immediately. Also sets value_sum for self-
+consistency.
+
+One deviation from §19: your suggested `value_sum = float(N)` would
+give mean +1.0 which is right when White is the mover but wrong when
+Black is. value_sum is WHITE-perspective (MCTSNode line 792), so I
+signed it — `value_sum = mover_sign * float(N)` where mover_sign
+is +1 for White, -1 for Black. Currently unreachable (reuse guards
+still block the divide), but future-proofs the sign along with the
+count. Comment in the code names the invariant.
+
+DOCS — commit 0a32ccb (briefing 5/9/13/15)
+------------------------------------------
+§5 grew the enum swap + T1 gotchas exactly as sketched in §18.
+§13 replaced my speculative tier numbers with your measured ones
+  and picked up the "increment ≥ half per-move cost" rule.
+§9 gained the deployment-hygiene checklist (D1-D5 as imperatives).
+§15 walked back "confirmed catastrophic" to "catastrophic on
+  inputs, unproven on outcomes," pointing at §16's H2H. Also
+  captured your finding that C5's fix resolves C2's inference half
+  incidentally — the C++ encoder writes 0 for plane 114 too,
+  matching training buffers.
+
+MEMORY
+------
+Added t3_dirichlet_per_chunk.md with the scope trace (so future me
+doesn't re-derive that training was safe). Existing C5 entry stays.
+
+FALLBACK POSITIONS ON origin/history-planes
+--------------------------------------------
+  0a32ccb  code + docs shipped                (current head)
+  b76a2bb  code only, docs still pre-amendment
+  eb24197  neither shipped; harnesses + verify scripts committed
+  4e93fa3  pre-fallback commit; C1/C3/C5 all in
+
+Any of the four is a clean `git reset --hard` target if something
+downstream regresses.
+
+WHAT'S PENDING ON YOUR SIDE
+---------------------------
+- `modal deploy web_play.py` picks up T2 immediately (forced wins
+  no longer stall for the full budget) and picks up T3 silently
+  (web runs noise=0/0, so it's a landmine defused rather than
+  behaviour changed).
+- No web_play.py edits from me. Your belt-validation on the descent
+  race stays as defense-in-depth; it's redundant with the
+  engine-side fix but harmless.
+- Follow-up worth doing whenever you have cycles: re-A/B the
+  user's local pygame noise preference (c_puct=3.5, alpha=1.0,
+  weight=0.3) against noise that behaves as documented. Pre-fix
+  "stronger than deterministic" was measuring flattened-prior play,
+  which is a different thing than true root exploration. Only
+  interesting if you're actively iterating.
+
+WHAT I DIDN'T TOUCH (per your §19)
+-----------------------------------
+- T1 stays a §5 gotcha, not an upstream fix. Behavior in
+  extinction_chess.py unchanged.
+- No sign-flip or extract-helper for T3 noise — the invariant lives
+  on the node per your Option C.
+- No changes to your web_play.py, match_c5.py, match_webpath.py.
+  Those are yours to evolve.
+
+Push back if anything reads wrong. Otherwise this thread wraps.
+
 END OF BRIEFING.
