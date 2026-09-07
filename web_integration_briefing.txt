@@ -99,6 +99,10 @@ Minimal usage:
 ─────────────────────────────────────────────────────────────────────────
 4. INFERENCE PROFILE
 ─────────────────────────────────────────────────────────────────────────
+⚠️  See §14.B for MEASURED single-game numbers on L4 — the estimates
+below are for BATCHED self-play and OVERSTATE single-game rates by
+~2x. Prefer §14.B when sizing a web deployment.
+
 - CPU (14-thread Intel i7-13700H, warmed): ~10 sims/sec
 - GPU (RTX 3090 A100-class): ~150+ sims/sec, batched
 - One "move" = variable sims. Training uses 100–800/move. Web latency
@@ -537,6 +541,13 @@ INTERACTIONS WITH OTHER KNOBS
 ─────────────────────────────────────────────────────────────────────────
 13. SIM COUNTS + TIME BUDGETING (how the engine decides when to move)
 ─────────────────────────────────────────────────────────────────────────
+⚠️  See §14.B for MEASURED single-game numbers. This section's claims
+about pondering carryover and "engine plays near-instantly" hold much
+less than expected on L4 — off-policy human moves discard most of the
+tree, and end-to-end move time was ~12s at sim ceiling 800. The
+formulas and knobs below are still correct; the intuitions about
+what the engine "usually" does are optimistic.
+
 Two things determine when the engine plays: how many MCTS sims are
 "enough," and how much wall time it's allowed to spend. Both matter,
 and both interact with pondering (section 12).
@@ -806,6 +817,59 @@ C4. mcts_search_cpp has no prev_root / return_root.
     pondering architecture as written. It's only wired into
     self_play_game(). Also _ext_chess is not built locally, so the pygame
     client is on the Python path too.
+
+
+C5. ⚠ BIGGEST ONE — the Python inference encoder zeroes 100 of 115 input
+    planes. This supersedes the castling question I left open in §14.E.
+
+    StateEncoder.encode_board() (src/state_encoder.py, the 115-channel
+    branch) NEVER WRITES planes 12-107. The code comment says so outright:
+    "12-107 history (zeros in fallback)" — and there is no non-fallback
+    path in that function. Castling (110-113) is guarded by
+    hasattr(game.board,'castling'), and Board has no such attribute
+    (its 5 attrs are grid, en_passant_target, halfmove_clock,
+    fullmove_number, position_history), so it never fires either.
+
+    Measured, mid-game at 12 plies, inference vs training buffer
+    (iter_696, mean nonzero values per position):
+
+        plane group        inference     buffer
+        pieces   0:12          31         29.8    ok
+        history 12:108          0        201.3    ← 96 planes dead
+        player     108         64         32.6    ok (all-1 or all-0)
+        endangered 109          4          5.0    ok
+        castling 110:114        0        162.2    ← 4 planes dead
+        halfmove   114         64          0.0    ← inverted vs C2
+
+    So 100 of 115 planes are structurally zero at inference, and the one
+    plane that IS populated at inference (halfmove) is the one that's
+    always zero in training. The buffers' history/castling must come from
+    the C++ self-play encoder, which populates them.
+
+    This is the live path, not a side road:
+        mcts_search -> evaluator.batch_evaluate_with_policy (alphazero.py:769)
+                    -> self.encoder.encode_board(g)
+    i.e. every MCTS leaf evaluation, in web_play.py AND in the pygame
+    client AND in anything else using AlphaZeroEvaluator.
+
+    WHAT I HAVE **NOT** ESTABLISHED — this is important:
+      - I proved the INPUTS differ. I did NOT measure a strength cost.
+        The net may have learned to lean on those planes heavily, or to
+        largely ignore them. Only a benchmark can say.
+      - Play looks sane (it answers e2e4 with e7e5, develops normally), so
+        it is clearly not broken — just possibly well below its ceiling.
+      - I don't know which encoder the BENCHMARKS in training_history.txt
+        used. If they used the Python path, every recorded strength number
+        was measured under these same zeroed conditions, so relative H2H
+        comparisons stay valid but absolute strength is understated — and
+        self-play (C++ encoder) would be generating data at an effective
+        strength the Python path cannot reproduce. Worth checking first;
+        it changes how to read the whole benchmark history.
+
+    You are much better placed than I am to judge whether this is a real
+    regression, a known-and-accepted simplification, or something that was
+    true only for the old 14-channel layout and never revisited after the
+    115-channel migration.
 
 
 D. CHEAP WINS MEASURED
