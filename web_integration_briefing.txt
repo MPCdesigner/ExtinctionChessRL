@@ -1,0 +1,863 @@
+EXTINCTION CHESS ENGINE — WEB INTEGRATION BRIEFING
+====================================================
+Purpose: give a fresh Claude Code session enough context to help the user
+put this engine behind a web frontend without re-reading the whole repo.
+
+Read this file first; then read the specific files it points to.
+
+
+─────────────────────────────────────────────────────────────────────────
+1. WHAT THIS IS
+─────────────────────────────────────────────────────────────────────────
+Extinction chess: a chess variant where the win condition is different.
+You win by driving ANY of your opponent's piece types to extinction
+(zero remaining). No check/checkmate. Kings can be captured. Standard
+setup and movement otherwise — castling, en-passant, promotion all apply
+(promoting to King is legal too).
+
+The engine here is an AlphaZero-style neural net + MCTS, trained from
+self-play on a WATcloud SLURM cluster over many months. Current strength
+is ~iter 1040 (checkpoint filenames encode the training iteration).
+
+Reference client: [tools/play_timed/](tools/play_timed/) is a working
+pygame app that plays timed matches against the engine. It's the
+canonical example of how to consume the engine — mirror its patterns.
+
+
+─────────────────────────────────────────────────────────────────────────
+2. KEY FILES (READ THESE FIRST)
+─────────────────────────────────────────────────────────────────────────
+Core:
+  [src/extinction_chess.py](src/extinction_chess.py)
+    Game rules. Defines PieceType, Color, Position, Move, Piece, Board,
+    ExtinctionChess. Pure Python, no torch dependency.
+
+  [src/alphazero.py](src/alphazero.py)
+    Neural net + MCTS. Read only the public surface:
+      - class AlphaZeroNet          (line ~630)  — the model
+      - AlphaZeroNet.load_checkpoint (line 686) — classmethod
+      - class AlphaZeroEvaluator    (line 728)  — wraps model for eval
+      - def descend_root            (line 899)  — tree reuse helper
+      - def mcts_search             (line 1003) — the main entrypoint
+      - def mcts_search_cpp         (line 947)  — C++ fast path (if built)
+
+Reference client (mirror these patterns):
+  [tools/play_timed/engine.py](tools/play_timed/engine.py)
+    Threaded pondering wrapper. Shows load-once, MCTS-chunks-in-thread,
+    tree reuse via descend_root, and a request queue for thread safety.
+    ~450 lines, self-contained.
+
+  [tools/play_timed/state.py](tools/play_timed/state.py)
+    Match state: clocks, move history, apply_move, take_back,
+    reconstruct_at (replay from move history), model_thinking_budget.
+
+  [tools/play_timed/__main__.py](tools/play_timed/__main__.py)
+    Pygame UI. Shows the request/response cadence with the engine.
+
+
+─────────────────────────────────────────────────────────────────────────
+3. PYTHON API (the surface a web backend would consume)
+─────────────────────────────────────────────────────────────────────────
+Minimal usage:
+
+    from extinction_chess import ExtinctionChess, Move, Position, PieceType, Color
+    from alphazero import AlphaZeroNet, AlphaZeroEvaluator, mcts_search
+
+    # Load once at server startup — cache the model + evaluator.
+    # Local checkpoints live in models/ at the repo root, filename
+    # pattern az_iter<N>.pt.  See section 6 for the full list.
+    net, meta = AlphaZeroNet.load_checkpoint(
+        "models/az_iter1040.pt", migrate=True)
+    net = net.to("cpu").eval()         # or "cuda" if available
+    evaluator = AlphaZeroEvaluator(net, device="cpu")
+    iteration = int(meta.get("iteration", -1))
+
+    # Per game: hold an ExtinctionChess() and (optionally) a persistent
+    # MCTS root for tree reuse across the game.
+    game = ExtinctionChess()
+    root = None
+
+    # For each engine move:
+    move_visits, root_value, root = mcts_search(
+        game, evaluator,
+        num_simulations=400,           # 100–800 typical
+        c_puct=2.5,
+        dirichlet_alpha=0.0,           # 0 = deterministic play
+        noise_weight=0.0,
+        tactical_shortcuts=True,       # mate-in-1 shortcut at root
+        prev_root=root,                # reuse the subtree from last search
+        return_root=True,
+    )
+    best_move, best_visits = max(move_visits, key=lambda x: x[1])
+    game.make_move(best_move)
+
+    # Descend the root into the played move so the next call can reuse it.
+    from alphazero import descend_root
+    root = descend_root(root, [best_move])  # NOTE: see gotcha in section 8
+
+
+─────────────────────────────────────────────────────────────────────────
+4. INFERENCE PROFILE
+─────────────────────────────────────────────────────────────────────────
+- CPU (14-thread Intel i7-13700H, warmed): ~10 sims/sec
+- GPU (RTX 3090 A100-class): ~150+ sims/sec, batched
+- One "move" = variable sims. Training uses 100–800/move. Web latency
+  target should drive the sim count picked per move.
+- Model: ~20 residual blocks × 256 filters (~25M params, small enough
+  to run on CPU for real-time play if you're patient).
+- Input planes: 115 channels (12 pieces × 1 + 96 history + 1 player
+  + 1 endangered + 4 castling + 1 halfmove). Old 14-channel checkpoints
+  are auto-migrated by load_checkpoint(migrate=True).
+
+For a web deployment, decide up front:
+  - Interactive (500ms-1s per move): ~5–10 sims on CPU, ~100 on GPU.
+    Weak but instant.
+  - "Real" strength (~training level): 400 sims. ~40s on CPU, ~3s GPU.
+  - Ponder during opponent's turn is a big win — the reference client
+    accumulates a tree while waiting for the user. See engine.py.
+
+
+─────────────────────────────────────────────────────────────────────────
+5. GAME MODEL (data shapes for a wire protocol)
+─────────────────────────────────────────────────────────────────────────
+Coordinates: 0-indexed. Position(rank=0, file=0) is a1 (white's corner).
+
+Piece types (Enum): P N B Q R K (values are single-char strings).
+Colors (Enum): WHITE=True, BLACK=False.
+
+Move object:
+  - from_pos, to_pos: Position(rank, file)
+  - promotion: PieceType or None
+  - is_en_passant, is_castling: bool
+  - castling_rook_from/to: for castling moves (rook coords)
+
+⚠️  NO FEN SERIALIZATION EXISTS. If you want to send positions over
+the wire, you must roll your own. Options:
+  (a) Extend to standard FEN — trivial for board, but you'll need to
+      encode "extinction" not as a real position concept (it's a
+      game-over flag), plus castling rights and halfmove clock.
+  (b) Send JSON like {"squares": [[null|"WP"|"BR"...]*8]*8, "toMove":
+      "W", "history": [{from: "e2", to: "e4"}, ...]} and have the
+      backend replay history to reconstruct the game object.
+      (This is what the reference client does implicitly — see
+      MatchState.reconstruct_at.)
+
+For playing back a game from history, mirror
+[state.py:322 reconstruct_at](tools/play_timed/state.py#L322):
+
+    g = ExtinctionChess()
+    for m in move_history:
+        g.make_move(m)
+
+
+─────────────────────────────────────────────────────────────────────────
+6. MODEL FILES
+─────────────────────────────────────────────────────────────────────────
+Local mirror (already downloaded, ready to use):
+    [models/az_iter<N>.pt](models/)
+
+Every 10th iteration from iter 30 through iter 1040 is present — 102
+AlphaZero checkpoints, ~95 MB each. Filenames use `az_iter<N>.pt`
+(NOT `model_iter_<N>.pt`, which was an older cluster-side convention).
+Load them with AlphaZeroNet.load_checkpoint("models/az_iter1040.pt",
+migrate=True).
+
+Latest and strongest: az_iter1040.pt (as of Sep 2026). Iter 810 is a
+validated pre-regression peak — a good conservative alternative if
+you want stability over peak strength. Ask the user which to ship as
+the default.
+
+Cluster source (only relevant if you need a checkpoint newer than
+1040): ~/extinction-chess/src/checkpoints/ on WATcloud head node.
+The user has SCP commands in commands.txt — ask them, don't guess.
+
+
+─────────────────────────────────────────────────────────────────────────
+7. WEB DEPLOYMENT APPROACHES (pick one, don't do both)
+─────────────────────────────────────────────────────────────────────────
+Option A — Python backend, one GPU container per game (RECOMMENDED)
+  This is the user's chosen approach. Rationale: it mirrors the
+  play_timed reference client (one Engine per game session, continuous
+  pondering), which is battle-tested. Section 12 below covers why
+  pondering matters and how tree reuse enables it.
+
+  Stack:
+    - Web server (whatever the user's site uses) as the front-of-house.
+      Owns auth, game history persistence, and the WebSocket to the
+      browser client.
+    - Per-game Modal container running FastAPI (or a class-based Modal
+      app with @app.cls()) that holds:
+        * The AlphaZeroNet + AlphaZeroEvaluator (loaded once at
+          container startup)
+        * The persistent MCTS root (a Python MCTSNode instance)
+        * The current ExtinctionChess position
+        * A background thread continuously running MCTS chunks
+      Container stays alive for the whole game.
+    - Web server proxies moves between browser and Modal container.
+      Move sent by user → forwarded to Modal → engine responds with
+      its move + analysis → back to browser.
+
+  Container lifecycle:
+    1. User starts a new game → web server spins up a Modal container,
+       associates it with the game_id in a session map.
+    2. Modal container loads model (~10–30s cold start on first request;
+       consider pre-warming on the page-load event before the user
+       clicks "start").
+    3. For each move: web server sends {"type": "user_move", "move": ...}.
+       Modal:
+         - calls engine.descend(move)  (advances the ponder tree)
+         - waits for the time budget or the sim ceiling
+         - reads engine.get_current_result()
+         - calls engine.descend(engine_move)
+         - replies with the engine's move + snapshot
+    4. Game ends OR user disconnects → tell Modal to shut down the
+       container. Modal auto-scales idle containers to zero after a
+       configurable idle timeout, so a hanging user won't burn budget
+       forever, but explicit shutdown is cleaner.
+
+  Modal-specific notes:
+    - Use @app.cls() with @modal.enter() to load the model once per
+      container, not once per request. See Modal docs: "Deferred model
+      loading in class methods".
+    - Set container_idle_timeout to something short (60–120s) so
+      abandoned games stop billing quickly.
+    - keep_warm=0 by default — pay only for active games. If cold
+      start UX is unacceptable, keep_warm=1 pins one always-warm
+      container at the cost of ~$25/mo per hot container.
+    - GPU choice: A10G is overkill for single-game inference. Try T4
+      (~$0.60/hr vs ~$1.10/hr) first — measure sims/sec and only
+      upgrade if latency isn't acceptable.
+
+  Cost estimate (5+3 game, ~10 min wall clock, A10G):
+    - ~$0.15–$0.30 per game
+    - $60 budget → ~200–400 games total
+    - This is fine for a personal project or beta. NOT sufficient for
+      a public launch — add cost controls (per-user rate limits, or a
+      queue with concurrency cap) before opening it up.
+
+  Risks (design around these):
+    - Cold start: 10–30s to load model + init PyTorch. See mitigations
+      above. Never let the user click "play" and stare at a spinner
+      for 30s with no feedback.
+    - Container preemption: Modal CAN restart your container mid-game
+      (rare but possible). Design the web server as the authoritative
+      source of the move history. On container restart, replay history
+      to reconstruct the position, then start a fresh MCTS root — you
+      lose the accumulated tree but the game continues.
+    - Concurrent-game cost multiplier: N games = N containers = N×
+      billing. Add a concurrency cap.
+
+Option B — Model export + JS MCTS (NOT recommended without a good reason)
+  You'd need to:
+    (i)   Export AlphaZeroNet to ONNX or TorchScript
+    (ii)  Reimplement extinction_chess.py in TypeScript
+    (iii) Reimplement mcts_search in TypeScript
+  That's weeks of work. Only justified if you want zero-server-cost
+  hosting AND are OK with weak play (browser MCTS is slow). Skip
+  unless the user specifically asks for this.
+
+Option B — Model export + JS MCTS (NOT recommended without a good reason)
+  You'd need to:
+    (i)   Export AlphaZeroNet to ONNX or TorchScript
+    (ii)  Reimplement extinction_chess.py in TypeScript
+    (iii) Reimplement mcts_search in TypeScript
+  That's weeks of work. Only justified if you want zero-server-cost
+  hosting AND are OK with weak play (browser MCTS is slow).
+
+
+─────────────────────────────────────────────────────────────────────────
+8. GOTCHAS
+─────────────────────────────────────────────────────────────────────────
+- descend_root identity bug: alphazero.descend_root compares moves by
+  Python identity (child.move == played_move), which fails when the
+  played move is a fresh Move instance (as it will be from any UI or
+  wire format). The reference engine ships its own structural version
+  — see [engine.py:63 _descend_root_structural](tools/play_timed/engine.py#L63).
+  Use this pattern for a web backend or tree reuse will silently
+  discard the tree on every move.
+
+- Threefold repetition and 50-move draws: implemented in the game
+  rules; check ExtinctionChess.game_over + winner + draw_reason after
+  every move to detect terminal states. (Draws are structurally rare
+  in extinction chess — 0–3 per 400 training games is normal.)
+
+- King is a normal piece: promoting to King is legal, and multiple
+  kings can exist. Don't reject king-promotion moves.
+
+- Value orientation: mcts_search's root_value is from the CURRENT
+  MOVER's perspective. If you want a consistent "White is winning"
+  scalar for display, flip when black to move (see
+  [engine.py:417](tools/play_timed/engine.py#L417) and
+  [__main__.py:908](tools/play_timed/__main__.py#L908) — the reference
+  client uses White's perspective in the review UI).
+
+- Model migration on load: load_checkpoint(migrate=True) upgrades old
+  14-channel checkpoints to the current 115-channel encoding. Use it
+  by default — it's a no-op on already-current checkpoints.
+
+- Tactical shortcut modes: 'off', 'basic', 'advanced'.
+  * off:      pure MCTS, no shortcuts. Weakest but most predictable.
+  * basic:    inside mcts_search, plays mate-in-1 at root if found.
+              Matches training-time behavior. Recommended default.
+  * advanced: post-MCTS filter that overrides moves hanging a mate-in-1.
+              The reference client implements this in
+              [__main__.py:_apply_advanced_shortcut](tools/play_timed/__main__.py).
+              Nice-to-have for a strong UI; not required.
+
+- Thread safety: mcts_search itself is single-threaded. If you want
+  the engine to keep thinking between requests (pondering), copy the
+  engine.py threaded wrapper pattern rather than reinventing it —
+  the request queue + interrupt flag design has been debugged.
+
+- No FEN parser (see section 5). Wire protocol is your choice.
+
+
+─────────────────────────────────────────────────────────────────────────
+9. RECOMMENDED FIRST-CUT ARCHITECTURE
+─────────────────────────────────────────────────────────────────────────
+Scope confirmed with user: a single uninterrupted game start to finish.
+No pause, no takeback, no undo, no game-save/resume. If the user
+disconnects mid-game, the game is abandoned and the Modal container
+tears down. Simplest possible surface.
+
+1. Web server (whatever the user's site uses) as the front-of-house.
+   Owns auth, the game_id → container mapping, and the browser WS.
+2. One Modal container per active game. Class-based Modal app
+   (@app.cls() + @modal.enter() to load the model once per container).
+   Container holds the Engine instance and the persistent MCTS root
+   for the whole game.
+3. WebSocket per game between browser and web server. Web server
+   proxies move messages to Modal via a plain HTTPS call per turn
+   (or a persistent connection if latency matters — start with HTTPS,
+   optimize later):
+     client → server:  {"type": "move", "move": {"from": "e2", "to": "e4"}}
+     server → client:  {"type": "engine_move", "move": {...},
+                        "analysis": {"sims": 400, "value": 0.12,
+                                     "top_moves": [...]}}
+4. Tree reuse enabled (import the structural descend from
+   tools/play_timed/engine.py — see section 12).
+5. Pondering enabled (background MCTS thread in the container — same
+   code path as tools/play_timed/engine.py).
+6. Sim ceiling + time budget as documented in section 13. Start with
+   defaults; expose as a difficulty setting later if wanted.
+7. Start with a single fixed checkpoint (ask the user which one).
+   Don't add checkpoint-picking UI in v1.
+
+Skip in v1: takeback, pause, resume, opening book, multi-checkpoint
+selection, positional-eval overlay, live tree visualization. All of
+these exist in the pygame client already and can be ported later.
+
+
+─────────────────────────────────────────────────────────────────────────
+10. WHAT TO ASK THE USER BEFORE STARTING
+─────────────────────────────────────────────────────────────────────────
+Already settled with the user (do NOT re-ask):
+  - Scope: single uninterrupted game, no takeback / pause / resume.
+  - Budget: $60 across two Modal accounts is fine — no launch scale
+    expected; this is a portfolio / friends-and-recruiters piece.
+  - Deployment target: Modal (not their web server's own compute).
+
+Still open:
+  - Which website / framework is this integrating into? (Determines
+    the shape of the web server side.)
+  - Which checkpoint should we ship as the default opponent?
+    (models/az_iter1040.pt is latest; ask the user for their pick.)
+  - Time control: user has mentioned 5+3 as an example — confirm.
+  - Difficulty settings: single strength, or expose sim_ceiling /
+    checkpoint as a difficulty dial? (Sim ceiling adjustment is
+    trivial; multi-checkpoint UX has to be designed.)
+  - Analysis exposure to the user: hide entirely, show top-3 moves,
+    or full search snapshot? (Some players want to learn from it;
+    others find it distracting. Ask.)
+  - Should the browser show the engine's clock and time-pressure
+    behavior visually, or hide time management as an implementation
+    detail?
+
+
+─────────────────────────────────────────────────────────────────────────
+11. ADDITIONAL CONTEXT (memory files, if the user re-shares them)
+─────────────────────────────────────────────────────────────────────────
+The user has an auto-memory system that documents pipeline state and
+project decisions. It's NOT in the repo — it lives under
+~/.claude/projects/... on the user's machine. If you need context
+about training history, cluster ops, or design decisions, ask the
+user to paste relevant sections rather than guess.
+
+Useful memory topics to ask about if they come up:
+- "C++ MCTS batch bug fix" (Jul 2026) — affects any tree-reuse code
+- "MCTS subtree reuse port" (Aug 2026) — the tree-reuse design
+- "Post-fix training dynamics" — expected model behavior/asymmetry
+- "current_pipeline_config" — hyperparameters, LR, buffer sizes
+
+─────────────────────────────────────────────────────────────────────────
+12. MCTS TREE REUSE + PONDERING (why the recommended arch works)
+─────────────────────────────────────────────────────────────────────────
+This is the mechanism that makes "GPU engaged for the entire game" a
+sensible spend. Without it, a fresh MCTS from scratch every move would
+throw away work and force you to pay for deep search on every turn.
+With it, the engine effectively searches during BOTH players' think
+time, so its own moves come out near-instantly with a deep tree.
+
+TREE REUSE
+----------
+MCTS builds a tree of positions rooted at the current position. Every
+"sim" is one selection→expansion→backprop cycle. A search with N sims
+produces a tree with N visits distributed across its nodes.
+
+After a move is played, the entire subtree under that child of the
+root is still a valid MCTS tree for the new position — the sims that
+explored it are not wasted. Tree reuse just promotes that child to be
+the new root and continues searching. Visits accumulated in the reused
+subtree count against the new sim budget.
+
+The helper for this is `descend_root(prev_root, [played_move])` in
+[src/alphazero.py](src/alphazero.py). It walks the root's children,
+finds the one matching the played move, and returns it as the new
+root.
+
+  ⚠️  IMPORTANT: alphazero.descend_root compares moves by Python
+      identity (child.move == played_move → falls back to `is`).
+      This ONLY works when the played move is the same Python object
+      that lives in the tree — which is true in self-play (the mover
+      picks from the tree's children) but FALSE from any external
+      source (UI click, wire protocol, replay).
+
+      Symptom: descend_root silently returns None on every move, tree
+      is rebuilt from scratch every time, "pondering" gives you
+      nothing.
+
+      Fix: use the structural version at
+      [tools/play_timed/engine.py:63 _descend_root_structural](tools/play_timed/engine.py#L63)
+      which compares by (from, to, promotion) tuple. Copy this
+      function into your Modal container.
+
+Then pass the promoted node back to mcts_search:
+
+    move_visits, root_value, root = mcts_search(
+        game, evaluator,
+        num_simulations=800,       # TOTAL target, not additional
+        prev_root=root,            # your descended node
+        return_root=True,
+        ...
+    )
+
+mcts_search runs only `(800 - root.visit_count)` additional sims when
+prev_root is supplied, so reuse cuts wall time proportionally to how
+much tree was retained.
+
+PONDERING
+---------
+Pondering is: continue running MCTS during your OPPONENT's thinking
+time, on your current position (the one where they're about to move).
+The tree grows in the background while you wait for their input.
+
+When their move arrives, descend the tree into it — the subtree under
+that move often already has thousands of visits accumulated. From
+your perspective, your MCTS "already thought about" the position you
+need to move in.
+
+Result: engine's moves come out effectively for free. Your first turn
+after a user move can already have N-thousand sims of context. If the
+sim budget for the engine's move is already met by the accumulated
+tree, it can play instantly (see the "sim ceiling" logic in the
+reference client — the engine plays as soon as it's accumulated
+enough sims, without waiting for a wall-clock deadline).
+
+HOW PLAY_TIMED IMPLEMENTS IT
+-----------------------------
+The reference client uses a background thread that continuously runs
+MCTS chunks (~30 sims per chunk) against the current root. Main thread
+sends requests through a lock-guarded queue:
+
+  engine.start_from(game)     # begin pondering on this position
+  engine.descend(played_move) # advance the tree, keep pondering
+  engine.stop()               # go idle (game end / new game)
+
+The worker consumes requests between chunks. Each chunk publishes a
+lock-guarded snapshot that the main thread can read at any frame:
+
+  engine.get_current_result() # {move: bestMove, search_snapshot: {...}}
+  engine.get_status_snapshot() # cheap read: current sim_count etc.
+
+An interrupt flag lets a mid-chunk MCTS call abort early if a new
+request arrives, so descend/stop don't have to wait for the full
+30-sim chunk to finish.
+
+Full implementation is ~450 lines in
+[tools/play_timed/engine.py](tools/play_timed/engine.py). Lift it
+into the Modal container more or less verbatim — the threading model
+is orthogonal to the transport layer.
+
+PORTING TO A MODAL CONTAINER
+-----------------------------
+The container holds one Engine instance for the lifetime of the game.
+Requests from the web server map directly to Engine methods:
+
+  Web request                      →  Modal container action
+  ─────────────────────────────────────────────────────────────
+  POST /game/new                   →  Engine.start_from(new game)
+  POST /game/move  {user_move}     →  Engine.descend(user_move),
+                                       then wait for time budget /
+                                       sim ceiling, then read
+                                       get_current_result(),
+                                       Engine.descend(engine_move),
+                                       return engine_move + snapshot
+  POST /game/end                   →  Engine.stop(), container exits
+
+The "wait for time budget / sim ceiling" is the same loop as
+[tools/play_timed/__main__.py:288-313](tools/play_timed/__main__.py#L288).
+Skip the pygame parts.
+
+WHAT INVALIDATES THE TREE
+-------------------------
+- Takeback / undo: user rolls the position back. The tree is now for
+  a position that isn't current. Call Engine.stop() then
+  Engine.start_from(new_position). The reference client's take_back
+  flow does this.
+- Container restart (Modal preemption): tree is lost. Rebuild via
+  Engine.start_from(reconstructed_from_history). Sims start from
+  zero; expect a slower "first engine move" after a restart.
+- Reload from a saved game (e.g., resuming from a URL): same as
+  container restart — reconstruct position, start_from, accept the
+  cold search.
+
+INTERACTIONS WITH OTHER KNOBS
+-----------------------------
+- dirichlet_alpha / noise_weight: root-only noise injection. When you
+  descend into a subtree, the new root does NOT get fresh noise. This
+  is fine for deterministic play (noise=0 anyway). For training-like
+  exploration, noise gets applied only on the very first search after
+  start_from; subsequent descents preserve accumulated visit counts.
+- tactical_shortcuts: when prev_root is supplied, mcts_search skips
+  the root shortcut (you've already committed to this subtree). If
+  you want depth-2 tactical checking, apply it POST-MCTS the way the
+  reference client does — see _apply_advanced_shortcut in
+  tools/play_timed/__main__.py.
+
+─────────────────────────────────────────────────────────────────────────
+13. SIM COUNTS + TIME BUDGETING (how the engine decides when to move)
+─────────────────────────────────────────────────────────────────────────
+Two things determine when the engine plays: how many MCTS sims are
+"enough," and how much wall time it's allowed to spend. Both matter,
+and both interact with pondering (section 12).
+
+NO HARD MINIMUM SIM COUNT
+-------------------------
+mcts_search will accept num_simulations=1 and produce a move. Below
+some sim count, though, the tree is essentially just the neural net's
+policy prior with no real search happening — you're playing the raw
+policy net.
+
+Rough strength-vs-sims curve (this model, at iter ~1040):
+  1 sim         raw policy — surprisingly OK for casual play, but no
+                MCTS refinement. The policy net alone has been trained
+                to millions of self-play games, so it's not weak, but
+                it can't see tactical threats.
+  10–50 sims    some search refinement, still shallow. Casual level.
+  100–200 sims  reasonable play. Sees most 1-move tactics.
+  400 sims      near-training-strength for most positions.
+  800 sims      training default. What every self-play game uses.
+  1600+ sims    diminishing returns for most positions; useful for
+                critical tactical moments.
+
+For v1 web deployment, 400–800 sims per move is the right target.
+
+TWO TRIGGERS: DEADLINE AND SIM CEILING
+--------------------------------------
+The reference client (and the recommended web arch) doesn't just
+"search for N sims and then play." It plays as soon as EITHER of two
+conditions fires:
+
+  (a) DEADLINE — wall-clock time budget is exhausted. This is the
+      safety net for when pondering hasn't accumulated enough tree.
+  (b) SIM CEILING — total accumulated visits in the tree ≥ some
+      threshold (default 800). This is what usually fires in
+      practice: pondering during the user's turn typically already
+      grew the tree past this ceiling before the engine's turn even
+      begins, so the engine plays immediately.
+
+Whichever fires first wins. Implementation reference:
+[tools/play_timed/__main__.py:296-313](tools/play_timed/__main__.py#L296).
+
+In a Modal container with a GPU, the sim ceiling is what fires
+almost every move — the user thinking for 5–10s at ~150 sims/sec
+already puts the tree well past 800 visits before the engine has to
+respond. The time budget only matters when the user plays instantly
+and the ponder tree hasn't matured yet.
+
+TIME BUDGET FORMULA
+-------------------
+From [tools/play_timed/state.py:359 model_thinking_budget_seconds](tools/play_timed/state.py#L359):
+
+    remaining = model_clock_display()          # seconds on main clock
+    base = remaining / 30 + increment          # aim for 30 moves left
+    hard_cap = max(30, base_seconds / 4)       # never > this per move
+    budget = min(base, hard_cap)
+
+    if remaining < 10:                         # time trouble safety
+        budget = min(budget, remaining * 0.3)
+
+    return budget + delay                      # delay (Bronstein) is free time
+
+The "30 moves left" assumption is why the model spends more time in
+the opening and less as the game progresses. It's not sophisticated
+(no game-phase awareness, no complexity scaling) but it works fine
+for a chess-like game with typical 40-move lengths.
+
+For 5+3 (300s + 3s/move, no delay):
+  - Move 1:    ≈ 300/30 + 3   = 13s per move budget
+  - Move 20:   ≈ 200/30 + 3   =  9.7s per move budget
+  - Move 40:   ≈ 100/30 + 3   =  6.3s per move budget
+  - Move 60:   ≈  40/30 + 3   =  4.3s per move budget
+  - With <10s: ≈ 30% of remaining
+
+Hard cap for 5+3: max(30, 300/4) = 75s per move. Never triggers in
+normal 5+3 play; it's there for longer time controls.
+
+WHAT ACTUALLY HAPPENS ON A GPU WITH PONDERING
+---------------------------------------------
+Assume T4 or A10G in Modal, ~100–200 sims/sec on this model.
+
+Turn N (user plays):
+  - Container's ponder thread was already running MCTS on the
+    position where the user is about to move.
+  - User takes 8s to move.  100 sims/sec × 8s = 800 sims accumulated
+    in the tree, spread across all of the user's candidate moves.
+  - User makes their move.  Container calls Engine.descend(user_move).
+    The subtree for that specific move (say 200 of those 800 visits
+    went into it) is promoted to the new root.
+
+Turn N+1 (engine plays):
+  - Ponder thread keeps running against the new root.
+  - Engine's time budget for this move is, say, 10s. Sim ceiling 800.
+  - Two things race:
+      * At ~150 sims/sec, adding 600 more sims takes 4s → sim ceiling
+        fires at t=4s. Engine plays.
+      * If the tree was already deep (>800 visits after descent), the
+        sim ceiling fires immediately. Engine plays in <100ms.
+  - Wall clock spent: usually 0–4s, occasionally the full 10s if the
+    descent-promoted subtree was thin.
+
+Net effect: the engine's moves feel nearly instant, most of the time.
+
+RECOMMENDED SETTINGS FOR V1
+---------------------------
+Deterministic play (no randomness in engine moves):
+    c_puct=2.5, dirichlet_alpha=0.0, noise_weight=0.0
+
+Sim ceiling: 800 to start. Adjust based on measured sims/sec on your
+chosen Modal GPU tier. If T4 gives you 120 sims/sec, then 800 sims is
+~6.5s worst-case per move — reasonable. If you drop to 400 sims for
+faster play, the engine plays weaker but nearly instantly.
+
+Time control: 5+3 is a good default. The formula above handles it
+cleanly. Bronstein delay (delay_seconds > 0) is nice for humans but
+strictly optional — 5+3 without delay is standard blitz.
+
+Tactical shortcut: 'basic' — matches training. Skip 'advanced' for
+v1 (it adds a post-MCTS filter that's marginal value at 800 sims).
+
+DIFFICULTY TIERS (optional v1.5)
+--------------------------------
+If you want to offer difficulty levels, sim_ceiling is the easiest
+knob to expose:
+  Easy:   sim_ceiling=100    (near-instant, weakish)
+  Medium: sim_ceiling=400
+  Hard:   sim_ceiling=800    (training-level)
+  Expert: sim_ceiling=1600   (worth the extra think time for tough
+                              positions; deadline still applies)
+
+Alternative: expose CHECKPOINT as difficulty. models/az_iter100.pt
+is dramatically weaker than models/az_iter1040.pt. Full list in
+section 6. This is more work UX-wise (multiple checkpoints to load
+per container) but produces a wider strength range than sim tuning
+can achieve alone.
+
+─────────────────────────────────────────────────────────────────────────
+14. FIELD NOTES FROM THE WEB-INTEGRATION SESSION (Sep 6 2026)
+─────────────────────────────────────────────────────────────────────────
+Added by the Claude session working in ~/Desktop/Personal Website, which
+built and ran the Modal backend described in §9. Everything below is
+MEASURED unless flagged otherwise. Several items contradict estimates in
+§4 and §13 — those sections were written from reasoning, these numbers
+are from an L4 running az_iter1040.
+
+You may have context I don't (design history, training-compat concerns,
+things tried and rejected). Treat this as a report, not a patch request.
+
+NOTHING IN src/ OR tools/ WAS MODIFIED. Three new files were added at the
+repo root: web_play.py (Modal WS backend), profile_mcts.py (the profiler
+producing these numbers), distill_web.py (unused — see §14.F).
+
+Reproduce all performance numbers with:  modal run profile_mcts.py
+Function-level breakdown with:           modal run profile_mcts.py --mode hotspots
+
+
+A. WHAT THE §9 ARCHITECTURE GOT RIGHT
+-------------------------------------
+Validated end-to-end on a real GPU:
+  - One WebSocket == one container == one game works. Modal keeps a single
+    function call alive per WS connection, and WITHOUT @modal.concurrent a
+    container serves one input at a time, so the connection IS the session.
+    Tree + ponder thread live in container memory for the whole game.
+  - The front-of-house web server in §9 item 1 turned out to be
+    UNNECESSARY. The browser talks to a Modal @modal.asgi_app() endpoint
+    directly. No server to rent.
+  - Because the server is authoritative and ships the legal move list each
+    turn, NO TypeScript rules port is needed. The client only renders.
+  - Cold start (container boot + torch import + 98 MB checkpoint load +
+    Engine construction) is 11.1s. Much better than feared.
+  - Cost: a 5+3 game is ~12 min of container life, ~$0.20 on L4.
+
+
+B. MEASURED PERFORMANCE — §4 AND §13 ARE OPTIMISTIC
+---------------------------------------------------
+§4 says ~150+ sims/sec on GPU. §13 says the sim ceiling "fires almost
+every move" and engine moves "feel nearly instant." Neither holds for
+single-game interactive play.
+
+Measured over the WebSocket (L4, sim ceiling reached, not deadline):
+    ceiling 150  ->   2.3 s/move
+    ceiling 300  ->   5.3 s/move
+    ceiling 800  ->  12.6 s/move        (~66 sims/sec end-to-end)
+
+Isolated MCTS on the same GPU:
+    200 sims: 1.87s (107 sims/sec)   NN 11.4%   tree/Python 88.6%
+    800 sims: 8.31s ( 96 sims/sec)   NN  9.8%   tree/Python 90.2%
+
+The §4 figure of 150+/sec is for BATCHED self-play across parallel games.
+A single game's MCTS is effectively latency-bound and does not reach it.
+
+THE GPU IS NOT THE CONSTRAINT. Raw network throughput on the same L4:
+    batch   1:  6.28 ms ->    159 evals/sec
+    batch   8:  6.79 ms ->   1178 evals/sec
+    batch  32:  6.30 ms ->   5076 evals/sec
+    batch  64:  8.51 ms ->   7523 evals/sec   (saturates here)
+MCTS asks for ~96 evals/sec against a ceiling of ~7500 — roughly 1.3%
+utilisation. A larger GPU attacks the 10% slice; not worth the money.
+
+Pondering DOES work (tree reaches ~3750 visits during a 45s think), but
+carryover is far lower than §13 implies: descend keeps only the subtree
+under the move actually played, so an off-policy human move discards most
+of it. Reply time was ~12s at ceiling 800 regardless of think time.
+
+
+C. BUGS FOUND (with evidence)
+-----------------------------
+C1. Board.copy() throws away a full board setup — ~21% of MCTS time.
+    [src/extinction_chess.py:141](src/extinction_chess.py#L141)
+
+        def copy(self):
+            new_board = Board()            # __init__ runs setup_initial_position()
+            new_board.grid = [[None ...]]  # next line discards all 32 pieces
+
+    cProfile over a 400-sim search (9.494s total): setup_initial_position
+    is the #1 self-time entry at 1.721s self / 2.000s cumulative, called
+    17,356 times. Board.copy itself: 8,678 calls, 2.299s cumulative.
+
+    Board has exactly 5 attributes (grid, en_passant_target, halfmove_clock,
+    fullmove_number, position_history) and copy() already assigns all five,
+    so Board.__new__(Board) is safe. Verified by monkeypatch, NOT applied:
+      - 40 random midgame positions, 0 mismatches vs original copy()
+      - 43.8 us -> 19.0 us  (2.31x on copy)
+
+    ⚠ This is on the hot path of SELF-PLAY, not just the web demo. Self-play
+    is ~11,800s of each ~12,000s iteration, over 1,046 iterations so far.
+    Worth far more to training than to the website.
+
+C2. Plane 114 (halfmove clock) is always zero in every stored buffer.
+    [src/state_encoder.py:100](src/state_encoder.py#L100) writes
+    halfmove_clock / 100.0 — a float in [0,1). [src/alphazero.py:1973]
+    saves boards as np.uint8, which truncates anything below 1.0 to 0.
+
+    Verified: 0 nonzero out of 103,200 positions across all 9 local
+    buffers (iters 688-696). Castling planes ARE nonzero in the same data,
+    so it's specific to the fractional value.
+
+    Consequence: the net trains with halfmove=0 always, but StateEncoder
+    feeds it real fractions at inference — a train/serve mismatch, and the
+    50-move-clock feature is dead capacity. Fixing it changes the plane's
+    meaning across the existing checkpoint lineage, so it's a deliberate
+    call, not an obvious win.
+
+C3. Engine.descend() is ASYNCHRONOUS and §12 doesn't warn about the race.
+    descend() appends to _pending_requests and sets _interrupt_chunk; the
+    worker consumes it between chunks. So immediately after descend(),
+    get_current_result() may still describe the PREVIOUS root.
+
+    Pondering makes this WORSE, not better: a deep ponder tree satisfies
+    the sim ceiling instantly, so the §13 loop ("play as soon as sims >=
+    ceiling") reads the stale root every time the engine is thinking well.
+    Observed the engine returning e4-e5 — a WHITE move — while playing
+    Black, with engine's own log line:
+        [engine] descend: make_move failed for e4-e5
+    make_move returned False, was ignored, and the client desynced.
+
+    Fix used in web_play.py: a stale result is always a move by the other
+    colour and therefore never legal in the current position, so validate
+    the candidate against game.get_legal_moves() before trusting it, and
+    never ignore make_move()'s return value.
+
+    NOTE: tools/play_timed/__main__.py:296-313 has the same shape. It may
+    be protected by frame timing in practice — worth a look.
+
+C4. mcts_search_cpp has no prev_root / return_root.
+    The C++ path can't do tree reuse, so it's incompatible with the §12
+    pondering architecture as written. It's only wired into
+    self_play_game(). Also _ext_chess is not built locally, so the pygame
+    client is on the Python path too.
+
+
+D. CHEAP WINS MEASURED
+----------------------
+BATCH_SIZE_MCTS is 8. Raising it (400 sims, L4):
+        8 -> 4.66s ( 86 sims/sec)
+       16 -> 4.13s ( 97 sims/sec)
+       32 -> 3.70s (108 sims/sec)
+       64 -> 3.45s (116 sims/sec)
+Caveat: larger virtual-loss batches select more leaves before backup,
+which shifts search behaviour relative to training. You'll know better
+than I do whether that matters for strength parity.
+
+Other cProfile hotspots for a 400-sim search, if the Python path stays:
+    get_legal_moves      9,078 calls   3.898s cumulative (41%)
+    get_position_key     8,678 calls   1.041s  (once per copy, threefold
+                                       detection — a Zobrist hash updated
+                                       incrementally would be ~free)
+    Position.__init__  2,296,163 calls 0.478s  (dataclass, no __slots__)
+    get_piece          1,299,136 calls 0.703s
+    is_valid_position  2,013,907 calls 0.660s
+
+
+E. THINGS I'M UNSURE ABOUT
+--------------------------
+- Board has NO 'castling' attribute, so the hasattr(game.board,'castling')
+  branch at state_encoder.py:92 looks dead. But the replay buffers DO have
+  nonzero castling planes (1.87M set values per buffer), so some other
+  encoder path must set them. I did not track down which. Relevant because
+  the halfmove bug (C2) lives in that same function.
+- Whether the §13 sim-ceiling loop is genuinely safe in the pygame client
+  (see C3) — I only proved the race in the async web context.
+
+
+F. FILES ADDED (none of them imported by existing code)
+-------------------------------------------------------
+  web_play.py       Modal WS backend. modal serve web_play.py
+  profile_mcts.py   Everything in §14.B/C1/D. modal run profile_mcts.py
+  distill_web.py    Distills the teacher into a ~520k-param student for
+                    browser inference. WRITTEN AND VALIDATED BUT NOT RUN —
+                    it was designed for a zero-server-cost deployment that
+                    was abandoned once Modal-per-game proved affordable.
+                    Kept only as a fallback (instant casual mode, or when
+                    monthly credits run out). Ignore unless that comes up.
+
+OPERATIONAL NOTES (this Windows machine)
+  - modal serve LIVE-RELOAD IS UNSUPPORTED ON WINDOWS. It prints
+    "Live-reload skipped" and keeps serving OLD code. Restart after every
+    edit or you will test the wrong thing.
+  - Run modal from PowerShell, not Git Bash: MSYS rewrites leading-slash
+    args, so `modal volume put ... /az_iter1040.pt` silently uploaded to
+    "/C:/Program Files/Git/az_iter1040.pt".
+  - Set PYTHONIOENCODING=utf-8 or the CLI crashes on cp1252 printing "✓".
+
+END OF BRIEFING.
