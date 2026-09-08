@@ -705,8 +705,8 @@ class AlphaZeroNet(nn.Module):
             new_conv_w[:, 108, :, :] = old_conv_w[:, 12, :, :]    # current player: 12 → 108
             new_conv_w[:, 109, :, :] = old_conv_w[:, 13, :, :]    # endangered: 13 → 109
             state["input_conv.weight"] = new_conv_w
-            print(f"  Checkpoint migration: {old_in_channels} → {NUM_INPUT_CHANNELS} "
-                  f"input channels (zero-init expansion, remapped ch12→108, ch13→109)")
+            print(f"  Checkpoint migration: {old_in_channels} -> {NUM_INPUT_CHANNELS} "
+                  f"input channels (zero-init expansion, remapped ch12->108, ch13->109)")
         else:
             # Native path: load at checkpoint's own channel count (faster inference)
             net = cls(
