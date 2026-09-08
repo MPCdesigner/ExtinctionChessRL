@@ -127,8 +127,8 @@ def main():
     parser.add_argument("--model", required=True, help="Model filename (in models/ dir)")
     parser.add_argument("--sims", nargs="+", type=int, default=SIM_OPTIONS,
                         help=f"Sim settings (default: {SIM_OPTIONS})")
-    parser.add_argument("--games", type=int, default=20,
-                        help="Games per sim setting (half as white, half as black; default: 20)")
+    parser.add_argument("--games", type=int, default=40,
+                        help="Games per sim setting (half as white, half as black; default: 40)")
     parser.add_argument("--device", default="cpu", help="Device (default: cpu)")
     args = parser.parse_args()
 

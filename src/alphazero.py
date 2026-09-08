@@ -412,6 +412,15 @@ def launch_benchmark_battery(iter_num, models_dir,
         if jid is not None:
             job_ids.append(jid)
 
+    # 5 mid-range H2H (fills the 60-100 iter blind spot between recent
+    # and distant — added Sep 8 2026 after iter 1050 verdict showed
+    # non-monotonic pattern vs iter 940, which would have been easier
+    # to interpret with data at 960/980/990 nearby).
+    for opp in [iter_num - 10 * i for i in range(6, 11)]:  # -60..-100
+        jid = _submit_h2h(opp, "mid-range")
+        if jid is not None:
+            job_ids.append(jid)
+
     # Win-taking multi-model
     wt_iters = (
         [iter_num] +
