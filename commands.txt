@@ -3736,16 +3736,58 @@ verify_c5_strength_cost.py -- C5 impact measurement (uses replay
 # Behavior on revert is back to the current drought state — main
 # still runs fine, just without helpers.
 
-## Related open issue: trpro-slurm1 NVML driver
+## Related open issue: NVML driver failures on BOTH trpro nodes
 
-# The fallback path on trpro-slurm1 is STILL broken (slurmstepd
-# "Failed to get device handle for GPU 0"). Not urgent because
-# primary (delta) is now healthy, but worth an admin ticket for
-# insurance. New ticket text (not the earlier 'slow 3090' ticket):
-#   "trpro-slurm1 GPU jobs fail at cgroup setup with 'slurmstepd:
-#    error: Failed to get device handle for GPU 0: Unknown Error'.
-#    Reproduces on jobs 616106, 616108, 616111, 616113, 616119,
-#    616121, 616184, 616186 since ~Aug 31 driver maintenance.
-#    SLURM allocates GRES fine but NVML call to acquire device
-#    handle fails. Job falls back to CPU and times out."
+# UPDATED Sep 8 2026 evening: the same NVML failure mode affects
+# trpro-slurm2 (4090) as well as trpro-slurm1 (3090s). Different
+# physical hardware, identical error text, both blocking user-facing
+# work.
+#
+# trpro-slurm2 (4090) evidence — auto-benchmark battery for iter 1050
+# (Sep 8 20:33 completion):
+#   - 13 jobs submitted, all landed on trpro-slurm2
+#   - 12 FAILED in 2-8 seconds each with slurmstepd "Failed to get
+#     device handle for GPU 0: Unknown Error" and PyTorch CUDA-init
+#     traceback in evaluator.__init__
+#   - 1 SUCCEEDED (job 616215, win-taking, 1h14m) — proves the node
+#     isn't fully dead, just intermittent
+#   - Retry attempt (job 616223, manual vs-iter-1040 H2H) FAILED
+#     identically in 3s the same evening
+#   - Failed job IDs: 616205, 616206, 616207, 616208, 616209, 616210,
+#     616211, 616212, 616213, 616214, 616216, 616217, 616223
+#
+# trpro-slurm1 (3090s) evidence — helper fallback since Aug 31
+# driver maintenance:
+#   - Failed helper jobs: 616106, 616108, 616111, 616113, 616119,
+#     616121, 616184, 616186, 616220, 616222 (all took 4h SBATCH wall
+#     because Python fell back to CPU after CUDA init failed)
+#
+# Ticket text (combined, one ticket for both nodes):
+#   "trpro-slurm1 AND trpro-slurm2 GPU jobs both fail at cgroup setup
+#    with slurmstepd 'Failed to get device handle for GPU 0: Unknown
+#    Error'. SLURM allocates GRES fine but NVML acquisition fails.
+#    Started ~Aug 31 (trpro-slurm1) and ~Sep 2 (trpro-slurm2), both
+#    likely tied to the Aug 31 cluster-wide driver maintenance.
+#    Blocks helper delivery (trpro-slurm1 is the helper fallback) AND
+#    the auto-benchmark battery (trpro-slurm2 is where the battery
+#    lands). Both iter 1040 and iter 1050 verdicts blocked.
+#    Evidence:
+#     - Helper jobs on trpro-slurm1: 616106, 616108, 616111, 616113,
+#       616119, 616121, 616184, 616186, 616220, 616222
+#     - Benchmark jobs on trpro-slurm2: 616205-616217, 616223
+#    Single anomaly worth mentioning: job 616215 (win-taking) succeeded
+#    on trpro-slurm2 for 1h14m, so the state is intermittent rather
+#    than permanently dead. Suggests driver or CUDA-runtime state
+#    issue rather than hardware failure."
+#
+## Workarounds while broken
+#
+# 1. Helper primary path (delta-slurm1) works fine post-12ac0ff
+#    launcher fix — fallback to trpro-slurm1 no longer needed for
+#    the common case.
+# 2. Benchmark battery cannot be run at all until trpro-slurm2
+#    recovers, since it's hardcoded to trpro-slurm2 in the auto-fire
+#    logic. Manual reruns to any other node not possible in-cluster
+#    (only trpro-slurm2 has a 4090; other GPUs are busy with main
+#    or drained). Modal port is the escape valve.
 
