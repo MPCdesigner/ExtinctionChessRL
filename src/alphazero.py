@@ -109,14 +109,26 @@ def _slurm_job_state(job_id):
 
 
 def _wait_until_running(job_id, max_seconds):
-    """Poll squeue until job is RUNNING or a terminal state. Returns True if RUNNING."""
+    """Poll squeue until job is RUNNING or a terminal state. Returns True if RUNNING.
+
+    None (empty squeue output) is NOT a terminal state — it can transiently
+    occur right after sbatch returns, before SLURM has indexed the new job
+    in squeue. Previously we treated None as terminal, which caused every
+    primary helper attempt to be cancelled in <1s (before the first sleep),
+    forcing all helpers to the trpro-slurm1 fallback whose NVML driver
+    was in a broken state, producing the 'helper drought' from Aug 31+.
+
+    True None-terminal cases (job actually vanished) are still bounded by
+    the outer deadline — the loop exits with False after max_seconds.
+    """
     deadline = time.time() + max_seconds
     while time.time() < deadline:
         state = _slurm_job_state(job_id)
         if state == "RUNNING":
             return True
-        if state in (None, "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"):
+        if state in ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"):
             return False
+        # PENDING, CONFIGURING, or None (not-yet-indexed) — keep polling.
         time.sleep(2)
     return False
 
@@ -153,7 +165,7 @@ def _cancel_job(job_id):
 
 
 def launch_helper_with_fallback(iter_num, helper_id, helper_script_path, helper_dir,
-                                max_wait_seconds=25,
+                                max_wait_seconds=60,
                                 primary_gres="gpu:rtx_2080_ti:1",
                                 primary_node="delta-slurm1",
                                 fallback_gres="gpu:rtx_3090:1",
