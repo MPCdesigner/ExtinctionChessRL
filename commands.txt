@@ -3678,13 +3678,24 @@ verify_c5_strength_cost.py -- C5 impact measurement (uses replay
 
 ## Deploying to the cluster
 
-# From wato-login2:
-    cd ~/extinction-chess
-    git pull origin history-planes
-    # Confirm the change is present:
-    grep -A 2 "if state in" src/alphazero.py | head -6
-    # Should show only "COMPLETED, FAILED, CANCELLED, TIMEOUT, NODE_FAIL"
-    # WITHOUT None in the tuple.
+# Canonical pattern is SCP from local to cluster, NOT git pull. The
+# cluster's ~/extinction-chess is NOT a git checkout — files are
+# maintained by SCP. See memory [[commands_txt_scp_trap]] and the
+# SSH/SCP section at the top of this file. Get this wrong and the
+# fix silently doesn't land (which is exactly how this bug survived
+# from July).
+#
+# From LOCAL PowerShell:
+    scp -i C:\Users\henry\.ssh\id_ed25519 `
+        "c:/Users/henry/Desktop/Extinction Chess RL/src/alphazero.py" `
+        h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+#
+# Then SSH to cluster and verify:
+    ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca
+    grep -A 1 'if state in' ~/extinction-chess/src/alphazero.py | head -3
+# Should show only "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
+# "NODE_FAIL" — WITHOUT None in the tuple. If None is still there,
+# the SCP hit the wrong path (double-check the destination path).
 
 # Fix activates on the NEXT sbatch of train.sh (Python is loaded once
 # per invocation and holds the old code until restart). Running job
@@ -3708,18 +3719,22 @@ verify_c5_strength_cost.py -- C5 impact measurement (uses replay
 ## Reversal if it breaks something
 
 # If helpers start hanging (jobs stuck PENDING forever, main doesn't
-# proceed), or if we discover a new failure mode:
-    cd ~/extinction-chess
-    git revert 12ac0ff
-    git push origin history-planes
-# Then re-pull on cluster. Behaviour returns to pre-fix (all helpers
-# skip, main proceeds without them — the drought state, but training
-# continues fine).
+# proceed), or if we discover a new failure mode, reverse by
+# SCPing back the pre-fix version. Two options:
 #
-# Emergency-only local rollback (no push, no git dance):
-    cd ~/extinction-chess/src
-    sed -i 's/if state in ("COMPLETED"/if state in (None, "COMPLETED"/' alphazero.py
-    # And remove the docstring/comment change if desired.
+# A) On cluster, one-liner sed to put None back:
+    ssh -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca `
+        "sed -i 's/if state in (\"COMPLETED\"/if state in (None, \"COMPLETED\"/' ~/extinction-chess/src/alphazero.py"
+#
+# B) Or check out the pre-fix version locally and SCP it up:
+    git checkout 6112a64 -- src/alphazero.py     # pre-fix commit
+    scp -i C:\Users\henry\.ssh\id_ed25519 `
+        "c:/Users/henry/Desktop/Extinction Chess RL/src/alphazero.py" `
+        h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+    git checkout HEAD -- src/alphazero.py         # restore local to head
+#
+# Behavior on revert is back to the current drought state — main
+# still runs fine, just without helpers.
 
 ## Related open issue: trpro-slurm1 NVML driver
 
