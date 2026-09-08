@@ -3785,9 +3785,65 @@ verify_c5_strength_cost.py -- C5 impact measurement (uses replay
 # 1. Helper primary path (delta-slurm1) works fine post-12ac0ff
 #    launcher fix — fallback to trpro-slurm1 no longer needed for
 #    the common case.
-# 2. Benchmark battery cannot be run at all until trpro-slurm2
-#    recovers, since it's hardcoded to trpro-slurm2 in the auto-fire
-#    logic. Manual reruns to any other node not possible in-cluster
-#    (only trpro-slurm2 has a 4090; other GPUs are busy with main
-#    or drained). Modal port is the escape valve.
+# 2. Benchmark battery REROUTED to thor-slurm1 (2x rtx_3090) in
+#    commit e68c95b (Sep 8 2026 evening). See section below.
+
+
+== BENCHMARK BATTERY REROUTE TO THOR-SLURM1 (Sep 8 2026, commit e68c95b) ==
+
+# Auto-benchmark battery now targets thor-slurm1 / rtx_3090 instead
+# of trpro-slurm2 / rtx_4090. Change is 2 lines in _sbatch_benchmark
+# defaults in src/alphazero.py.
+
+## Manual sbatch template (matches what auto-battery does)
+
+# For MANUAL benchmark reruns tonight (until auto-resubmit picks up
+# the new defaults), use this pattern:
+
+sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=4 --mem=16G --time=4:00:00 --nodelist=thor-slurm1 --output=$HOME/compare_<NEW>vs<PREV>_thor_%j.log --wrap="export PYTHONUNBUFFERED=1 && cd ~/extinction-chess/src && python3 setup.py build_ext --inplace && python3 compare_extensive.py --m1 az_iter_<PREV>_100pct.pt --m2 az_iter_<NEW>_100pct.pt --device cuda"
+
+# Ran cleanly for iter 1050 rerun Sep 8 (see logs
+# compare_1050vs1040_thor_616291.log through
+# compare_1050vs100_thor_616294.log).
+
+## Verification before running anything on thor
+
+# thor's state can flip. Run this 30-second probe first:
+sbatch --partition=compute --gres=gpu:rtx_3090:1 --cpus-per-task=2 --mem=4G --time=0:02:00 --nodelist=thor-slurm1 --output=$HOME/thor_cuda_probe_%j.log --wrap="python3 -c 'import torch; print(\"available:\", torch.cuda.is_available()); print(\"count:\", torch.cuda.device_count()); print(torch.zeros(4).to(\"cuda\") if torch.cuda.is_available() else \"CPU only\")'"
+
+# Expected clean output:
+#   available: True
+#   count: 1
+#   tensor([0., 0., 0., 0.], device='cuda:0')
+# If it shows CPU only or a stepd error, thor has developed the same
+# NVML issue and we're back to the escape valve (Modal, etc).
+
+## Node capacity note
+
+# thor has 2x 3090 but in practice acts as ~1 concurrent slot because
+# some other user's SHARD allocation on the node blocks full-GPU
+# grants for the second 3090. Auto-battery submits 13 jobs; SLURM
+# queues them and runs 1-at-a-time. Total battery wall time on thor:
+# ~4-6 hours (vs ~3-4 hours previously on trpro-slurm2 4090). Not
+# ideal but functional.
+
+## Reversal when trpro-slurm2 is fixed
+
+# 1. First probe trpro-slurm2 (analogous command with --nodelist=
+#    trpro-slurm2 --gres=gpu:rtx_4090:1). If clean, proceed.
+# 2. Edit src/alphazero.py _sbatch_benchmark defaults:
+#      gres="gpu:rtx_3090:1"    -> "gpu:rtx_4090:1"
+#      nodelist="thor-slurm1"   -> "trpro-slurm2"
+# 3. Commit + SCP to cluster (canonical pattern):
+
+scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess RL/src/alphazero.py" h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/
+
+# 4. Activates on next Python restart (auto-resubmit of main).
+
+## What canNOT be rerouted this way
+
+# Helpers still route to delta primary (2080_ti) with trpro-slurm1
+# fallback. That's launch_helper_with_fallback (separate function
+# from _sbatch_benchmark). If we ever want to reroute helpers too,
+# separate change.
 
