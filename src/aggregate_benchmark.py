@@ -14,8 +14,8 @@ when interpreting benchmark output, and stays robust to future format
 changes in the underlying test scripts.
 
 Extraction rules per test type:
-  - H2H (compare_extensive.py):  tail 30 lines
-  - Tactical random:              tail 30 lines
+  - H2H (compare_extensive.py):  tail 25 lines
+  - Tactical random:              tail 25 lines
   - Win-taking:                   from last "Win-Taking Test Summary"
                                   marker to EOF (captures the model table
                                   AND the "Tough Positions" section);
@@ -37,11 +37,11 @@ def _tail_lines(log_path, n):
 
 
 def extract_h2h_summary(log_path):
-    return _tail_lines(log_path, 30)
+    return _tail_lines(log_path, 25)
 
 
 def extract_tactical_summary(log_path):
-    return _tail_lines(log_path, 30)
+    return _tail_lines(log_path, 25)
 
 
 def extract_win_taking_summary(log_path):
@@ -95,6 +95,17 @@ def _build_test_plan(iter_num):
         opp = iter_num - offset
         tests.append((
             "distant H2H",
+            f"vs iter {opp}",
+            f"compare_{iter_num}vs{opp}_*.log",
+            extract_h2h_summary,
+        ))
+    # Mid-range H2H (fills the 60-100 iter gap between recent and distant).
+    # Added Sep 8 2026 alongside the launcher-side change in alphazero.py's
+    # launch_benchmark_battery — keep the two in sync.
+    for offset in (60, 70, 80, 90, 100):
+        opp = iter_num - offset
+        tests.append((
+            "mid-range H2H",
             f"vs iter {opp}",
             f"compare_{iter_num}vs{opp}_*.log",
             extract_h2h_summary,
