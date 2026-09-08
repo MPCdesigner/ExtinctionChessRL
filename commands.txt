@@ -3635,3 +3635,102 @@ verify_c5_strength_cost.py -- C5 impact measurement (uses replay
 # - Set PYTHONIOENCODING=utf-8 or the CLI crashes on cp1252 printing
 #   Unicode characters like "✓".
 
+
+== HELPER DROUGHT ROOT CAUSE + FIX (Sep 8 2026, commit 12ac0ff) ==
+
+# The "helper drought" that started Aug 31 and persisted through
+# multiple admin tickets, cluster instability episodes, and
+# Modal-fallback discussions was NOT a cluster problem.
+#
+# It was a race condition in our own helper launcher. Diagnosed via
+# sacct + a manual sbatch test on Sep 8 17:26 (after delta came back).
+
+## The bug (all in src/alphazero.py, ~line 111)
+
+# _wait_until_running polled squeue immediately after sbatch returned.
+# For ~1-2s post-submission, squeue -j <jobid> returns empty (SLURM
+# hasn't indexed the new job yet). _slurm_job_state returned None for
+# empty output. _wait_until_running treated None as a terminal state
+# and returned False WITHOUT SLEEPING — so every primary helper
+# attempt was cancelled in <1s of wall time.
+#
+# Symptom in sacct: primary attempts show State=CANCELLED+,
+# Elapsed=00:00:00, NodeList='None assigned'. Fallback attempts land
+# on trpro-slurm1 where the NVML driver has been broken since Aug 31.
+# Both paths dead -> no helper .npz files delivered -> main logs
+# "missing file: helper_v104N_id0.npz — proceeding without".
+#
+# Same bug was fixed in local tools Jul 2026 (commit f0a4c39, memory
+# [[python_mcts_helper_fixes]]) but was never deployed to the cluster
+# — probably lost to the src/ vs repo-root SCP path trap
+# [[commands_txt_scp_trap]].
+
+## The fix (commit 12ac0ff, Sep 8 2026)
+
+# Two changes in src/alphazero.py:
+#   1. Remove None from the terminal-states set in _wait_until_running.
+#      None now stays in the polling loop like PENDING. The outer
+#      deadline still bounds it — a truly vanished job returns False
+#      after max_seconds instead of hanging forever.
+#   2. Bump launch_helper_with_fallback max_wait_seconds default 25 -> 60.
+#      Safety margin; manual test scheduled in <5s on delta but 60s
+#      guards against loaded-scheduler edge cases.
+
+## Deploying to the cluster
+
+# From wato-login2:
+    cd ~/extinction-chess
+    git pull origin history-planes
+    # Confirm the change is present:
+    grep -A 2 "if state in" src/alphazero.py | head -6
+    # Should show only "COMPLETED, FAILED, CANCELLED, TIMEOUT, NODE_FAIL"
+    # WITHOUT None in the tuple.
+
+# Fix activates on the NEXT sbatch of train.sh (Python is loaded once
+# per invocation and holds the old code until restart). Running job
+# 615399 keeps the buggy launcher for its remaining iters. When 615399
+# hits wall-time (or crashes), train.sh's auto-resubmit fires a fresh
+# Python which reads the new code — helpers on iter N+1 should land
+# on delta-slurm1 primary.
+
+## What success looks like
+
+# In the next main log after activation:
+    grep "[helper .*] running on" ~/train_<newjobid>.log
+
+# Expected: some or all helpers on delta-slurm1 instead of exclusively
+# trpro-slurm1. Then the following iter should either:
+#   - Show real training data in the log ("consumed N helper positions")
+#     if helpers finish before main's consume time (~3.2h), OR
+#   - Still show "missing file" if helpers can't finish fast enough on
+#     delta 2080_ti (unlikely — pre-drought helpers finished ~2h)
+
+## Reversal if it breaks something
+
+# If helpers start hanging (jobs stuck PENDING forever, main doesn't
+# proceed), or if we discover a new failure mode:
+    cd ~/extinction-chess
+    git revert 12ac0ff
+    git push origin history-planes
+# Then re-pull on cluster. Behaviour returns to pre-fix (all helpers
+# skip, main proceeds without them — the drought state, but training
+# continues fine).
+#
+# Emergency-only local rollback (no push, no git dance):
+    cd ~/extinction-chess/src
+    sed -i 's/if state in ("COMPLETED"/if state in (None, "COMPLETED"/' alphazero.py
+    # And remove the docstring/comment change if desired.
+
+## Related open issue: trpro-slurm1 NVML driver
+
+# The fallback path on trpro-slurm1 is STILL broken (slurmstepd
+# "Failed to get device handle for GPU 0"). Not urgent because
+# primary (delta) is now healthy, but worth an admin ticket for
+# insurance. New ticket text (not the earlier 'slow 3090' ticket):
+#   "trpro-slurm1 GPU jobs fail at cgroup setup with 'slurmstepd:
+#    error: Failed to get device handle for GPU 0: Unknown Error'.
+#    Reproduces on jobs 616106, 616108, 616111, 616113, 616119,
+#    616121, 616184, 616186 since ~Aug 31 driver maintenance.
+#    SLURM allocates GRES fine but NVML call to acquire device
+#    handle fails. Job falls back to CPU and times out."
+
