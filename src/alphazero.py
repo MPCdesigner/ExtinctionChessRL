@@ -308,8 +308,19 @@ def _find_checkpoint(iter_num, models_dir):
     return os.path.basename(matches[0])
 
 
-def _sbatch_benchmark(iter_dir, log_name, wrap_cmd, gres="gpu:rtx_4090:1",
-                     nodelist="trpro-slurm2", cpus=4, mem="16G", time_limit="4:00:00",
+def _sbatch_benchmark(iter_dir, log_name, wrap_cmd,
+                     # Rerouted Sep 8 2026 from trpro-slurm2 (rtx_4090:1) to
+                     # thor-slurm1 (rtx_3090:1). trpro-slurm2's 4090 NVML
+                     # driver broke on Sep 2 (slurmstepd: Failed to get
+                     # device handle for GPU 0), killed both iter 1040 and
+                     # iter 1050 auto-batteries, and hasn't recovered. thor's
+                     # 3090 is ~60-80% the speed of the 4090 for our workload
+                     # but WORKS. Revert to trpro-slurm2 / rtx_4090 when
+                     # admin fixes trpro-slurm2 — verify with a CUDA probe
+                     # first (see commands.txt HELPER DROUGHT + NVML section).
+                     gres="gpu:rtx_3090:1",
+                     nodelist="thor-slurm1",
+                     cpus=4, mem="16G", time_limit="4:00:00",
                      dependency=None):
     """Submit one benchmark test job. Returns SLURM JOBID or None on failure.
 
