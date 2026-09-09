@@ -3847,3 +3847,171 @@ scp -i C:\Users\henry\.ssh\id_ed25519 "c:/Users/henry/Desktop/Extinction Chess R
 # from _sbatch_benchmark). If we ever want to reroute helpers too,
 # separate change.
 
+
+== SEP 7-8 2026 SESSION SUMMARY ==
+
+# Consolidates a dense two-day thread. Individual sections above have
+# the deep dives; this is the index + status snapshot as of Sep 8
+# night. When you come back to this project after time away, read
+# this section first — it points at everything else.
+
+## Timeline
+
+# Sep 5-7: delta-slurm1 DOWN, job 615399 pending indefinitely
+# Sep 6-7: web integration thread with the other Claude session
+#          working out of ~/Desktop/Personal Website
+# Sep 7 evening: iter 1050 auto-battery fired on trpro-slurm2 -> 12/13
+#          tests died with NVML failure (same driver rot as
+#          trpro-slurm1 since Aug 31 maintenance)
+# Sep 8 morning: delta came back Sep 8 06:02:51, 615399 started
+#          cleanly, iters 1047-1049 completed, iter 1050 mid-flight
+# Sep 8 evening: intensive debugging + code changes described below
+
+## What shipped (all on origin/history-planes, SCP'd to cluster)
+
+# Commits, ordered chronologically:
+#   3a1fab7  Board.copy skips wasted __init__      (Sep 7, C1 fix)
+#   43ea9d7  Engine descend race + belt validation (Sep 7, C3 fix)
+#   f8e67b6  Modal image builds _ext_chess         (Sep 7, C5 fix)
+#   b76a2bb  T2 shortcut + T3 noise-once-per-root  (Sep 7, briefing findings)
+#   ef1869a  Add noise_applied to MCTSNode slots   (Sep 7, B1 hotfix — I shipped
+#                                                    b76a2bb broken; web session
+#                                                    caught it in Modal prod)
+#   1d02dde  Unicode arrow -> ASCII in migration print (Sep 7, Windows compat)
+#   12ac0ff  Helper launcher: None isn't terminal  (Sep 8, root cause of drought)
+#   e68c95b  Reroute auto-benchmark to thor-slurm1 (Sep 8)
+#   830e984  Add 5 mid-range H2H + double tactical (Sep 8)
+#   89548b5  Aggregator: mirror mid-range + tail 25 (Sep 8)
+
+# Also several briefing + memory + doc commits that don't touch runtime.
+
+## Web integration thread (concluded)
+
+# See web_integration_briefing.txt sections 14-23 for the full arc.
+# Landed:
+#   - Modal @modal.asgi_app() WS backend serving one game per container
+#   - Per-game GPU with pondering (Engine wrapper from tools/play_timed/)
+#   - Endpoint: https://henryliang416525--extinction-chess-web-web.modal.run
+#   - $60 budget covers ~200-400 5+3 games
+#   - Real perf on L4 with C++ built: 800 sims in 1.18s (~10x speedup
+#     vs pre-C5 Python encoder)
+# Bugs surfaced during that thread that turned out to affect training
+# and/or the pygame client too:
+#   - C1 Board.copy waste (Python path only, doesn't affect training)
+#   - C2 halfmove plane always 0 (train/serve mismatch, dead capacity,
+#     unresolved by design — training-lineage decision, see memory
+#     [[halfmove_plane_zero]])
+#   - C3 Engine descend race (affects any chunk-based ponder loop)
+#   - C5 Python encoder zeroes 100/115 planes (deployment-only)
+#   - T1 current_player doesn't flip on game-ending move (documented
+#     as §5 gotcha, not fixed)
+#   - T2 tactical shortcut publishes sim_count=0 (fixed b76a2bb)
+#   - T3 Dirichlet noise per chunk (fixed b76a2bb, invariant on
+#     MCTSNode.noise_applied)
+#   - B1 __slots__ trap when adding noise_applied without updating
+#     the tuple (my miss, fixed ef1869a) — memory
+#     [[feedback_slots_smoke_test]]
+
+## Cluster recovery + helper drought root-cause
+
+# Sep 8 morning: delta came back. Job 615399 resumed from iter 1046
+# with no data loss. Iters 1047, 1048, 1049 completed by 17:26 with
+# helper drought STILL ongoing.
+#
+# Investigation revealed the drought had TWO layers:
+#   - True node issue: trpro-slurm1 3090s and trpro-slurm2 4090 both
+#     have broken NVML drivers since ~Aug 31 (slurmstepd Failed to
+#     get device handle) — genuinely admin-side
+#   - OUR bug: _wait_until_running treated None (squeue not-yet-
+#     indexed after fresh sbatch) as terminal, cancelling every
+#     primary helper attempt on delta in <1s and forcing all helpers
+#     to the trpro-slurm1 broken fallback
+#
+# Same bug had been "fixed in local tools" in Jul but never SCP'd to
+# cluster (memory [[commands_txt_scp_trap]]). Now permanently fixed
+# on cluster via 12ac0ff. Activates on 615399's next auto-resubmit
+# (wall-time ~06:02 Sep 9 morning or earlier if force-scancel'd).
+# Full deep-dive: HELPER DROUGHT ROOT CAUSE + FIX section above.
+
+## Benchmark migration (trpro-slurm2 -> thor-slurm1)
+
+# trpro-slurm2's 4090 broke Sep 2 (independent of the trpro-slurm1
+# 3090 issue). Killed both iter 1040 and iter 1050 auto-batteries
+# (12/13 tests died in 2-8s each; only win-taking survived because
+# its --device arg defaults to CPU-fallback while H2H/tactical force
+# --device cuda explicitly).
+#
+# thor-slurm1 has 2x rtx_3090 in State=MIXED, verified healthy via
+# direct CUDA probe. Rerouted auto-battery defaults there via e68c95b.
+# Slightly slower per-test (3090 vs 4090) but works.
+# Full deep-dive: BENCHMARK BATTERY REROUTE TO THOR-SLURM1 above.
+
+## Benchmark expansion (Sep 8)
+
+# Two changes at once:
+#   - 5 new mid-range H2H tests at N-60, N-70, N-80, N-90, N-100
+#     (fills the previously-blind 60-iter gap between recent and
+#     distant). Reason: vs iter 940 result tonight would have been
+#     easier to interpret with data at 960/980 nearby.
+#   - Tactical games: 20/sim -> 40/sim (100 -> 200 total games per
+#     test). CI at 93% win tightens ±5.1pp -> ±3.6pp for detecting
+#     small iter-to-iter drift. Runtime bumps 9min -> 18min.
+# Battery grows from 13 to 18 tests. Runtime on thor (usually 1
+# slot due to shard blocking): ~9h serial, ~4.5h if both 3090s
+# somehow free. Overnight.
+
+## ⚠ DRIFT RISK: launcher + aggregator have parallel hardcoded lists
+
+# alphazero.py `launch_benchmark_battery` and aggregate_benchmark.py
+# `_build_test_plan` each have their own copy of the 18-test list.
+# If you add or remove a test type in one, you MUST update the other,
+# or the aggregator will silently drop the new logs from the summary.
+#
+# Bit us this session — I added mid-range to the launcher and forgot
+# the aggregator until user asked how it worked. Fixed at 89548b5.
+#
+# Future refactor: extract the test spec into a shared module-level
+# constant (e.g. `BATTERY_TEST_PLAN = [...]` importable from both
+# files). Not urgent, but worth doing next time either file is touched.
+
+## Iter 1050 verdict (Aug 29 exploration bump)
+
+# Auto-battery on trpro-slurm2 largely died (see above). Manual
+# reruns on thor-slurm1 Sep 8 evening (compare_1050vs*_thor_*.log
+# in ~/) provided:
+#   - vs iter 1040:  49-51 tied (within noise, crossover ~100 sims)
+#   - vs iter 940:   47-53 slight loss, but 26% draws = move-cap
+#                    artifact confirmed by tactical showing 0 draws
+#   - Tactical:      93% overall, 100% at @100/@400
+#   - Win-taking:    normal range (78% @20, 94% @200)
+#   - vs iter 100:   88% overall, monotonic
+# Verdict: LEANS KEEP. Continue training under current parameters.
+# Follow up at iter 1060 auto-battery for cleaner signal.
+
+## Download iter 1050 locally (canonical model-download pattern)
+
+scp -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/models/az_iter_1050_100pct.pt "c:/Users/henry/Desktop/Extinction Chess RL/models/az_iter1050.pt"
+
+# Note the rename: cluster uses az_iter_<N>_<PCT>pct.pt, local uses
+# az_iter<N>.pt (no percent suffix, no underscore between iter and
+# number). Memory [[local_checkpoint_mirror]] documents this
+# convention. Same pattern applies to any historical iter.
+
+## What's pending after tonight
+
+#   - File the combined trpro-slurm1 + trpro-slurm2 NVML admin ticket
+#     (text in the "NVML driver failures" subsection above)
+#   - Add iter 1050 row to training_history.txt once main writes
+#     it to the log (currently mid-iter 1050 in memory of running
+#     job 615399)
+#   - Watch iter 1060's auto-battery (fires after 615399's next
+#     auto-resubmit) — first battery with all four expansions:
+#       * lands on thor (not dead trpro-slurm2)
+#       * 18 tests instead of 13
+#       * tactical runs 200 games instead of 100
+#       * aggregator picks up all 18
+#     If it comes back cleanly, all Sep 8 changes are validated.
+#   - After iter 1060 verdict: implement the expert-distillation
+#     design (see EXPERT-DATA DISTILLATION section above, designed
+#     Sep 2 but gated on helper/benchmark stability)
+
