@@ -2556,7 +2556,8 @@ Step 5: If Step 4 clean → keep. Add row to TRAINING PARAMETER CHANGELOG.
 
 == UPDATING TRAINING HISTORY FILES ==
 
-Three files must be updated when a training job completes:
+Three files, FOUR edits when a training job completes (job_history.txt
+gets two edits):
 
 1. training_history.txt — column format (verified Jul 26):
    Iter  W  B  D  Positions  Helper  GenTime  TrainT  NNEvals  Loss  Policy  Value  Notes
@@ -2566,17 +2567,26 @@ Three files must be updated when a training job completes:
      200 = one, 0 = both missed)
    - NNEvals from "batched self-play: NNNN NN evals" line
    - Notes: flag milestone %, benchmark firings, W>B skews > 40 points,
-     helper drought, etc.
+     helper drought, etc. The LAST iter of a job's batch gets a
+     larger multi-line note summarizing the whole batch (loss
+     trajectory, helper state, cluster events, next auto-resubmit
+     job id).
 
 2. terminal_drilling_history.txt — matching iters when drilling active:
    Iter | Drill | Loss   | Policy | Value  | Time
 
-3. job_history.txt — has TWO sections:
+3. job_history.txt — has TWO sections that both need updating (this is
+   the source of the "4 edits" count):
    - Top table: close previous "RUNNING" row (End time, Duration, State,
      notes). Add new "RUNNING" row for auto-resubmitted job ID (from
      "Submitted batch job N" line at end of log).
    - Bottom section: update previous `# JOBID iters N+` to actual range
      completed. Add new `tail -10 ~/train_NEWJOBID.log` line.
+
+DO NOT touch job_logs.txt during routine per-job updates. That file is
+a raw-log archive maintained by occasional BACKFILL operations only
+(see the "Backfill job_logs.txt..." commits in git log). Attempting to
+append per-job is out-of-scope for the standard update workflow.
 
 Grep for the last few rows in each file to match current formatting exactly
 (don't invent new columns).
@@ -2584,7 +2594,10 @@ Grep for the last few rows in each file to match current formatting exactly
 **Don't record benchmark results in history files** — auto-benchmarks are
 stored at ~/extinction-chess/benchmark_results/iter_<N>.txt on the cluster.
 Manual benchmarks are transient in ~/compare_*.log on the cluster; they
-are NOT durable data.
+are NOT durable data. When the training_history.txt row for a benchmark
+iter is being written, cite the log filenames and summarize the verdict
+in the Notes column — don't paste tables (memory
+[[feedback_no_aggregator_dupe]]).
 
 
 == MODAL HELPER PIPELINE ==
