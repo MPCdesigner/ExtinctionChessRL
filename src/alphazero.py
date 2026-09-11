@@ -166,10 +166,20 @@ def _cancel_job(job_id):
 
 def launch_helper_with_fallback(iter_num, helper_id, helper_script_path, helper_dir,
                                 max_wait_seconds=60,
-                                primary_gres="gpu:rtx_2080_ti:1",
-                                primary_node="delta-slurm1",
-                                fallback_gres="gpu:rtx_3090:1",
-                                fallback_node="trpro-slurm1"):
+                                # Sep 11 2026: main now runs on thor-slurm1
+                                # (2x rtx_3090), so helpers primary=thor also
+                                # (uses the 2nd 3090 when main takes 1);
+                                # fallback=delta (2x rtx_2080_ti, plenty of
+                                # capacity when main isn't there).
+                                # trpro-slurm1 is DOWN, no longer a fallback.
+                                # Delta helper measured 1h41m for 200 games
+                                # (baseline speed). Fits well within main's
+                                # ~3.3h/iter window on delta baseline;
+                                # main-on-thor iters may be similar.
+                                primary_gres="gpu:rtx_3090:1",
+                                primary_node="thor-slurm1",
+                                fallback_gres="gpu:rtx_2080_ti:1",
+                                fallback_node="delta-slurm1"):
     """Launch one helper job with a primary→fallback GPU strategy.
 
     Returns (job_id, output_path). If neither primary nor fallback could
@@ -309,17 +319,18 @@ def _find_checkpoint(iter_num, models_dir):
 
 
 def _sbatch_benchmark(iter_dir, log_name, wrap_cmd,
-                     # Rerouted Sep 8 2026 from trpro-slurm2 (rtx_4090:1) to
-                     # thor-slurm1 (rtx_3090:1). trpro-slurm2's 4090 NVML
-                     # driver broke on Sep 2 (slurmstepd: Failed to get
-                     # device handle for GPU 0), killed both iter 1040 and
-                     # iter 1050 auto-batteries, and hasn't recovered. thor's
-                     # 3090 is ~60-80% the speed of the 4090 for our workload
-                     # but WORKS. Revert to trpro-slurm2 / rtx_4090 when
-                     # admin fixes trpro-slurm2 — verify with a CUDA probe
-                     # first (see commands.txt HELPER DROUGHT + NVML section).
-                     gres="gpu:rtx_3090:1",
-                     nodelist="thor-slurm1",
+                     # Sep 11 2026: reverted from thor-slurm1 (rtx_3090:1)
+                     # BACK to trpro-slurm2 (rtx_4090:1). Reason: main + helpers
+                     # now run on thor (2x 3090), so thor is fully occupied and
+                     # benchmarks would queue behind them. trpro-slurm2's 4090
+                     # came back up Sep 10 (probe 616497 clean, then confirmed
+                     # via 3-iter run on 616786) but runs ~2-3x slower than
+                     # historical baseline due to residual Aug-31 driver haze.
+                     # Slower than thor but no contention — battery completes
+                     # in ~10-15h overnight instead of ~4-6h. Revisit when
+                     # cluster is fully healed.
+                     gres="gpu:rtx_4090:1",
+                     nodelist="trpro-slurm2",
                      cpus=4, mem="16G", time_limit="4:00:00",
                      dependency=None):
     """Submit one benchmark test job. Returns SLURM JOBID or None on failure.
