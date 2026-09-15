@@ -4028,3 +4028,161 @@ scp -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca:~/e
 #     design (see EXPERT-DATA DISTILLATION section above, designed
 #     Sep 2 but gated on helper/benchmark stability)
 
+
+== SEP 9-12 2026 SESSION SUMMARY ==
+
+# Consolidates the second dense multi-day thread. Cluster went through
+# multiple failure/recovery cycles; main was migrated 3 times. Read
+# this if you're returning after time away.
+# WEB INTEGRATION thread stayed dormant — nothing changed there.
+# See web_integration_briefing.txt §§14-23 for that history.
+
+## Timeline
+
+# Sep 9 morning: delta-slurm1's GPU driver broke (Driver/library
+#   version mismatch + PyTorch Error 804). ALL trpro/thor nodes were
+#   already drained/down. Cluster fully blocked for GPU work.
+# Sep 9 afternoon: trpro-slurm1 came back (still slow from Aug 31
+#   driver update). Migrated main from delta -> trpro-slurm1 via
+#   sed on train.sh. Iters 1053-1054 completed but progressively slow
+#   (6h -> 13h per iter, driver-degradation getting worse).
+# Sep 10 morning: trpro-slurm2 4090 probed clean. Migrated main
+#   trpro-slurm1 -> trpro-slurm2. Iters 1055-1057 completed at 6-9h/
+#   iter. HELPERS FINALLY WORKED — first helper-fed batch since Aug 30!
+# Sep 11 morning: cluster state shifted again — trpro-slurm1 went
+#   DOWN, thor-slurm1 RECOVERED, delta accepted probes.
+# Sep 11 afternoon: helpers stopped working (delta briefly refused
+#   long-wall-time jobs with stale ReqNodeNotAvail state; fallback
+#   trpro-slurm1 dead). Diagnostic + verification showed problem was
+#   transient.
+# Sep 11 evening: after helper timing analysis (delta helper=1h41m,
+#   trpro-slurm1 helper=3-4h) and thor speed test (4.4min for 40
+#   games at sims=100 = normal 3090), user decided to migrate main
+#   to thor for real speed. Landed changes in commit c3b8230.
+# Sep 12 morning: main on thor completed 10 iters (1058-1067) in
+#   ~20h at ~2h/iter — best cadence since Aug 30. Iter 1060 auto-
+#   battery FIRED and completed 18/18 tests on trpro-slurm2.
+
+## What shipped this session
+
+#   c3b8230  Reroute helpers thor/delta + benchmarks back to trpro-slurm2
+#            - launch_helper_with_fallback defaults: primary_node=
+#              thor-slurm1 (was delta), fallback_node=delta-slurm1
+#              (was trpro-slurm1)
+#            - _sbatch_benchmark defaults: nodelist=trpro-slurm2 (was
+#              thor-slurm1), gres=rtx_4090:1 (was rtx_3090:1). Reverts
+#              Sep 8 e68c95b — now that main+helpers use thor, benchmarks
+#              go somewhere else.
+#
+# Cluster-side train.sh edits (via sed, not committed to repo):
+#   Sep 9:  delta-slurm1/rtx_2080_ti -> trpro-slurm1/rtx_3090
+#           backup: train.sh.pre_delta_broken_2026_09_09
+#   Sep 10: trpro-slurm1/rtx_3090 -> trpro-slurm2/rtx_4090
+#           backup: train.sh.trpro_slurm1_slow_2026_09_10
+#   Sep 11: trpro-slurm2/rtx_4090 -> thor-slurm1/rtx_3090 (current)
+#           backup: train.sh.trpro_slurm2_2026_09_11
+
+## Current architecture (Sep 12)
+
+# Main:        thor-slurm1 rtx_3090 (~2h/iter — best in weeks)
+# Helper 0:    delta-slurm1 rtx_2080_ti (~1h41m for 200 games)
+# Helper 1:    trpro-slurm1 rtx_3090 (~3-4h for 200 games; occasionally
+#              times out at 4h wall)
+# Benchmarks:  trpro-slurm2 rtx_4090 (~30 min/test, ~10h battery)
+#
+# ⚠ Helpers ARE observed on delta/trpro-slurm1, NOT thor/delta as our
+# alphazero.py commit c3b8230 intended. Investigation: launch_helper_
+# with_fallback caller passes explicit args (helper_primary_gres,
+# helper_primary_node, ...) that override the defaults. Those values
+# are hardcoded elsewhere (probably run_training.py). Not urgent —
+# the accidental routing works — but worth grepping for those names
+# next session if we want to force helpers onto thor.
+
+## Iter 1060 verdict (Aug 29 exploration-bump status)
+
+# Full data: ~/extinction-chess/benchmark_results/iter_1060.txt on cluster.
+# LEANS KEEP with tactical dip caveat. Key numbers:
+#   vs iter 1050:     56.0%  (first measured real advancement)
+#   vs iter 1040-1010: 45-49% (tied within noise band)
+#   vs iter 1000-960:  54-57% (slight advancement across mid-range)
+#   vs iter 950-910:   52-62% (clear advancement vs pre-bump distant)
+#   vs iter 100:       86.0%  (baseline sanity)
+#   Win-taking @200:   92%   (comparable to iter 1050's 94%)
+#   Tactical random:   81.5% (⚠ DOWN from 93% at iter 1050 — real regression)
+#
+# Notable pattern reversal from iter 1050: iter 1060 is STRONGER at
+# low sim counts than iter 1050 was. Policy head recovering some raw
+# signal (Aug 29 bump's initial flattening effect fading).
+# Tactical drop is the only concerning signal. Watch iter 1070.
+
+## Helper timing measurements (Sep 10-11)
+
+# Job 616944 delta helper: 1h41m for 200 games (clean baseline)
+# Job 616946 trpro-slurm1 helper: 2h27m (~1.5x slow)
+# Job 616788-616852 trpro-slurm1: 3h23m-3h54m (2-2.5x slow, marginal fit)
+# Thor helpers: untested for real 200-game workload; compare_extensive
+#   at sims=100 gave 4.4 min for 40 games (job 617046) suggesting
+#   thor is at normal 3090 speed.
+
+## Cluster state Sep 12 (post-recovery)
+
+# Node          | State  | GPU              | Notes
+# delta-slurm1  | works  | 2x rtx_2080_ti   | 6 CPUs limit — 1 helper max
+# trpro-slurm1  | works  | 4x rtx_3090      | 2x slow post-Aug-31, degrades
+# trpro-slurm2  | works  | 1x rtx_4090      | 2-3x slow, but reliable
+# thor-slurm1   | works  | 2x rtx_3090      | HEALTHY, normal 3090 speed
+# wato2-slurm1  | drained| 1x rtx_2080_ti   | still admin-drained
+# tr-slurm2     | works  | 1x gtx_1080      | weak GPU, low priority
+
+## Deployment sequence used for main migrations
+
+# Documented pattern (repeated 3× this session):
+# 1. Probe target node with 30-second CUDA test to verify driver works
+# 2. Back up current train.sh:
+#      cp ~/extinction-chess/train.sh ~/extinction-chess/train.sh.<current_state>_<date>
+# 3. sed-edit two lines:
+#      sed -i 's/gpu:<oldtype>:1/gpu:<newtype>:1/' ~/extinction-chess/train.sh
+#      sed -i 's/nodelist=<oldnode>/nodelist=<newnode>/' ~/extinction-chess/train.sh
+# 4. Verify with head -20 ~/extinction-chess/train.sh
+# 5. scancel <current_jobid>  (scancel doesn't trigger USR1 auto-resubmit)
+# 6. sbatch ~/extinction-chess/train.sh
+# 7. Wait ~20 min, tail the new log for `Device: cuda` and first
+#    [timing #5000] marker
+#
+# Reversal: cp <backup>.sh train.sh + scancel + sbatch.
+
+## Diagnostic lessons
+
+# 1. Dashboard green != actual GPU works. Always probe with a real
+#    CUDA workload. Even 30 seconds is enough to catch NVML init
+#    failures.
+# 2. External nvidia-smi from a separate probe job doesn't tell you
+#    about a running job's GPU utilization — each SLURM job gets
+#    its own GPU via cgroups; the probe sees a DIFFERENT GPU.
+#    Iter 1053 case: user caught me misdiagnosing "hung" main based
+#    on 0% util in a probe. Log-tail is authoritative.
+# 3. sacct's Reason=ReqNodeNotAvail for CANCELLED jobs is often
+#    STALE — it reflects the state when the job first pended, not
+#    when it was cancelled. Always verify with a fresh manual submit
+#    before concluding delta/whichever refuses jobs.
+# 4. History file rule (per memory [[feedback_history_file_scope]]):
+#    "4 edits" means 4 edits across 3 files (training + drilling +
+#    job_history-TWO-sections). NOT 4 files. Do NOT touch
+#    job_logs.txt during routine updates — it's backfill-only,
+#    maintained by the user in the IDE.
+
+## What's pending
+
+#   - Investigate helper routing overrides (grep run_training.py for
+#     helper_primary_node etc). Not urgent — current routing works.
+#   - File NVML admin ticket if helpers keep flaking (cluster is now
+#     mostly-functional but with ~2x slowdowns everywhere).
+#   - Watch iter 1070 auto-battery (~20h) for the follow-up verdict.
+#     Tactical regression at iter 1060 is the main thing to monitor.
+#   - Implement expert-distillation (still deferred; requires stable
+#     helpers, which we now roughly have on thor+delta+trpro-slurm1).
+#   - Consider bumping games_per_iteration 400 -> 800 if helpers
+#     regress again; makes main self-sufficient at 2× iter cost.
+#   - Refactor: shared BATTERY_TEST_PLAN constant to prevent
+#     launcher/aggregator drift (flagged Sep 8, still not done).
+
