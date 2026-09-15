@@ -4186,3 +4186,200 @@ scp -i C:\Users\henry\.ssh\id_ed25519 h74liang@wato-login1.ext.watonomous.ca:~/e
 #   - Refactor: shared BATTERY_TEST_PLAN constant to prevent
 #     launcher/aggregator drift (flagged Sep 8, still not done).
 
+
+═══════════════════════════════════════════════════════════════════════════
+SEP 14-15 2026 SESSION SUMMARY — PHASE 1 DATA VOLUME BUMP (K=10, 600/300 GAMES)
+═══════════════════════════════════════════════════════════════════════════
+
+## The trigger: iter 1080 + 1090 benchmarks showed plateau/mild regression
+
+# Trajectory of the key metrics across three consecutive auto-benchmarks:
+#
+# | Anchor         | iter 1070    | iter 1080    | iter 1090          |
+# |----------------|--------------|--------------|--------------------|
+# | vs iter 100    | 92.5% ★ peak | 86.0%        | 85.0%              |
+# | vs iter 1020   | 56.0%        | 54.5%        | 45.5% ⚠ loses      |
+# | vs iter 980    | 60.2%        | 55.0%        | 49.2% ⚠ loses      |
+# | vs iter 950    | 67.2%        | 54.5%        | 59.2%              |
+# | Tactical @400  | 85.5%        | 83.5%        | 84.5%              |
+# | Recent H2H avg | ~56%         | ~50%         | ~52%               |
+#
+# The vs-100 downward slope (92.5→86→85) is the cleanest degradation signal.
+# Multiple mid-range anchors iter 1070 clearly beat now flip to LOSSES at
+# iter 1090. This is slow-motion regression, not just plateau.
+#
+# Notable positives (kept us from doing a hard rollback):
+#   - Tactical stable at ~84-85% (still above iter 1060's 81.5% pre-bump baseline)
+#   - vs iter 1050 improved from iter 1080's 49.5% to iter 1090's 56%
+#   - Model still comfortably above pre-Aug-29 all metrics
+#
+# Per memory [[feedback_rollback_bias]] we prefer non-destructive recovery
+# over rollback when regression signal isn't extremely strong.
+
+
+## The hypothesis: buffer is too small relative to AZ practice
+
+# AlphaZero (Silver et al. chess paper): 800 sims + ~500k-game rolling window.
+# Leela Chess Zero: 800 sims + ~500k-1M game rolling window.
+# Us (pre-Phase-1):  800 sims + K=5 × ~400 games = ~2000-game rolling window.
+# We're 250x smaller in data window at same label quality. Model may have
+# extracted what it can from the current data distribution.
+#
+# Since our sim count IS at AZ standard, we don't need to bump sims —
+# we need MORE DATA per gradient step. Two levers:
+#   1. Larger K (persistent buffer size)
+#   2. More games per iter (both main + helpers)
+
+
+## The changes (Phase 1 — pushed Sep 15 as commit 2eeb743)
+
+# Four surgical edits, no logic changes:
+#
+# 1. run_training.py:9   games_per_iteration    400  ->  600
+# 2. run_training.py:52  replay_buffer_size     5    ->  10
+# 3. run_helper.py:37    --num-games default    200  ->  300
+# 4. helper.sh:6         --time                 02:45:00  ->  03:00:00
+#
+# The 1.5x multiplier on all game counts (main and helper) keeps the
+# main:helper ratio identical (main = 2/3 of games, helpers = 1/3 combined).
+#
+# Wall time bump from 2h45m to 3h00m: matches new expected main iter time.
+# Rationale for keeping wall tight: helper's real deadline is main's iter
+# time, not the SBATCH wall — if a helper doesn't finish before main
+# reaches consume_helper_files(), its output is orphaned and gets swept
+# by next iter's cleanup_stale_helper_files() (alphazero.py:265-279).
+# Loose wall = wasted cluster compute on helpers that already missed.
+
+
+## Expected effects
+
+#   - Per-iter gen time: ~2h05m -> ~3h07m (linear scaling with games count)
+#   - Iters per 24h SLURM wall: ~10 -> ~7-8 (was our recent norm on thor)
+#   - Buffer at K=10 steady state: ~72k positions -> ~210k positions (~3x)
+#   - Per-iter training set with helpers: ~86k -> ~230k positions
+#   - Helper reliability: unchanged (delta ~2h27m, trpro-slurm1 fast ~1h44m,
+#     both fit new 3h wall). Trpro-slurm1 in slow regime (~4h) will hit
+#     wall like it did before — same drought behavior at same rate.
+
+
+## Buffer transition (K=5 -> K=10, no crashes possible)
+
+# Load code at alphazero.py:2066-2113 just globs whatever iter_*.npz files
+# exist and loads them all — doesn't require exactly K files, doesn't fail
+# if fewer. Cleanup at alphazero.py:2050-2060 only deletes files older than
+# cutoff = iter_num - K + 1; never tries to *find* missing ones.
+#
+# Timeline after config lands (call first-new-config iter M):
+#
+# | Iter  | Files on disk           | Notes                                |
+# |-------|-------------------------|--------------------------------------|
+# | M     | 5 legacy + M = 6        | cutoff = M-9, all files >= M-5, no  |
+# |       |                         | deletes                              |
+# | M+1   | 7 files                 | growing                              |
+# | M+2   | 8 files                 | growing                              |
+# | M+3   | 9 files                 | growing                              |
+# | M+4   | 10 files                | full K=10, oldest is M-5 (== cutoff)|
+# | M+5   | 10 files (steady state) | oldest legacy M-5 < cutoff M-4,     |
+# |       |                         | deleted. Now fully new-config data.  |
+#
+# At ~3h07m/iter, steady state reached ~15h wall clock after config lands.
+# Iters M through M+4 train on MIX of legacy 400-game .npz + new 600-game.
+
+
+## Rollback plan (in case Phase 1 turns out worse than iter 1090)
+
+# Pre-Phase-1 snapshot commit:   ef4caef  ("History + docs: iters 1058-1087,
+#                                          Aug-29 bump verdicts, cluster
+#                                          session summary")
+# Phase 1 change commit:         2eeb743  ("Phase 1 config: bump data volume
+#                                          + buffer to close AZ-practice gap")
+#
+# Option A (clean revert):
+#   git revert 2eeb743
+#   git push origin history-planes
+#   SCP the reverted files to cluster src/ (see below for paths)
+#
+# Option B (surgical checkout of just those files):
+#   git checkout ef4caef -- src/run_training.py src/run_helper.py helper.sh
+#   git commit -m "Roll back Phase 1: <reason>"
+#   git push origin history-planes
+#   SCP reverted files to cluster.
+#
+# Detecting whether Phase 1 was harmful:
+#   Look at iter 1100's auto-benchmark (first ×10 iter with buffer partially
+#   populated with new-config data — mix). Look at iter 1110's auto-benchmark
+#   (first ×10 iter with buffer FULLY new-config, K=10 steady state).
+#   If either regresses further from iter 1090's readings, consider rollback.
+#   If either improves (or holds), keep and gather more data.
+#
+#   Specific rollback triggers (should require BOTH):
+#     1. vs iter 100 drops below 82% (significantly below iter 1090's 85%
+#        and pre-Aug-29 baseline)
+#     2. Recent H2H (vs iters 1080/1090) < 45%
+
+
+## Cluster deploy (Sep 15 sequence, executed)
+
+# SCP paths (mind the src/ subdir trap — memory [[commands_txt_scp_trap]]):
+#
+#   scp -i ~/.ssh/id_ed25519 <local>/src/run_training.py \
+#       h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/run_training.py
+#   scp -i ~/.ssh/id_ed25519 <local>/src/run_helper.py \
+#       h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/run_helper.py
+#   scp -i ~/.ssh/id_ed25519 <local>/helper.sh \
+#       h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/helper.sh
+#
+# Verify (should print =600, =10, default=300, 03:00:00):
+#   grep -E "games_per_iteration|replay_buffer_size" ~/extinction-chess/src/run_training.py
+#   grep "num-games" ~/extinction-chess/src/run_helper.py
+#   grep "SBATCH --time" ~/extinction-chess/helper.sh
+#
+# Kick-in timing: Python reads run_training.py + run_helper.py at process
+# start. Current job (625177 at time of deploy) was still using cached old
+# values. Changes activate at 625177's wall-time auto-resubmit. No scancel
+# needed — clean handoff preferred.
+
+
+## Phase 2 (deferred): milestone-based helper early termination
+
+# Current pain: helpers are all-or-nothing. If a helper doesn't complete
+# --num-games before SBATCH wall or main's consume window, ZERO games get
+# saved. This wastes 1-2h of GPU compute on trpro-slurm1 when it goes slow.
+#
+# Design:
+#   1. run_helper.py replaces single batched_self_play(N=300) call with a
+#      milestone loop. Each pass calls batched_self_play(milestone=100),
+#      appends results to accumulator.
+#   2. Between passes, helper checks $SLURM_JOB_END_TIME - now vs
+#      time_last_pass_took × 1.1 (safety factor). If projected next pass
+#      would exceed deadline, break out and save what we have.
+#   3. Deadline source: $SLURM_JOB_END_TIME env var (SLURM sets this
+#      automatically). Subtract ~60s for .npz atomic write.
+#   4. Milestone size: 100 games. Rationale: negligible per-batch warm-up
+#      cost (<1% overhead — tree reuse is intra-game not intra-batch, and
+#      C++ SelfPlayManager construction is milliseconds). Smaller = more
+#      granular decisions.
+#
+# Edge cases:
+#   - Helper can't even finish 100 games: saves nothing (same as today).
+#     Acceptable — if it can't do 100 games in 3h, node is hopeless.
+#   - Helper finishes all 300 games with time to spare: normal path, no
+#     early termination.
+#   - Helper finishes 200 out of 300: saves 200-game .npz, main consumes it.
+#
+# Prerequisites before deploying Phase 2:
+#   - Phase 1 stable for 10-20 iters (confirm we can attribute effects
+#     cleanly to buffer/volume vs. helper mechanism).
+#   - iter 1110's benchmark verdict clarifies Phase 1's effect.
+
+
+## References
+
+# - Phase 1 pre-change snapshot commit:   ef4caef
+# - Phase 1 change commit:                2eeb743
+# - iter 1080 benchmark log:  ~/extinction-chess/benchmark_results/iter_1080.txt
+# - iter 1090 benchmark log:  ~/extinction-chess/benchmark_results/iter_1090.txt
+# - See [[commands_txt_scp_trap]] memory for cluster src/ path warning
+# - See [[current_pipeline_config]] memory (LIKELY STALE post-Sep-15 — bumped
+#   values shown here supersede that memory's snapshot until updated)
+
