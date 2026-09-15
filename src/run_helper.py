@@ -34,7 +34,7 @@ def main():
                         help="Path to az_latest.pt (or a versioned checkpoint).")
     parser.add_argument("--output-path", required=True,
                         help="Path to write the helper .npz to (atomic).")
-    parser.add_argument("--num-games", type=int, default=200)
+    parser.add_argument("--num-games", type=int, default=300)
     parser.add_argument("--num-simulations", type=int, default=800)
     parser.add_argument("--num-parallel", type=int, default=50)
     parser.add_argument("--num-threads", type=int, default=4)

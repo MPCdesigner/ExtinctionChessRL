@@ -6,7 +6,7 @@ if __name__ == "__main__":
     multiprocessing.set_start_method("spawn", force=True)
     train(
         iterations=100,
-        games_per_iteration=400,
+        games_per_iteration=600,
         num_simulations=800,
         learning_rate=0.00002,  # reverted Jul 14 from 0.00005: iter 790 benchmark showed LR bump caused Phase-13-lite damage (win-taking @200: 94%→87%; tactical @400: 95%→80%) while H2H stalled at 0% progress vs iter 780
         models_dir="../models",
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         extra_hard_epochs=5,
         extra_hard_lr_factor=0.025,
         replay_buffer_dir="../replay_buffer",
-        replay_buffer_size=5,  # rolling window of last 5 iterations
+        replay_buffer_size=10,  # rolling window of last 10 iterations (bumped 5->10 to close data-window gap vs AZ practice)
         # ── Decoupled helper jobs (recency injection) ──
         # Each iter, main sbatches helpers_per_iter helpers that each generate
         # 200 games against az_latest.pt. Main consumes the resulting .npz files
