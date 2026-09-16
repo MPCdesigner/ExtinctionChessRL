@@ -4383,3 +4383,85 @@ SEP 14-15 2026 SESSION SUMMARY — PHASE 1 DATA VOLUME BUMP (K=10, 600/300 GAMES
 # - See [[current_pipeline_config]] memory (LIKELY STALE post-Sep-15 — bumped
 #   values shown here supersede that memory's snapshot until updated)
 
+
+## Sep 15 OOM incident — Phase 1 tripped 32G budget, bumped train.sh --mem to 64G
+
+# **What happened:** Job 628286 (first job on Phase 1 config) crashed at iter
+# 1102's training step with SLURM cgroup OOM (host RAM, NOT CUDA). Log ended:
+#
+#   /var/spool/slurmd/job628286/slurm_script: line 23: 40649 Killed
+#   slurmstepd: error: Detected 1 oom_kill event in StepId=628286.batch.
+#
+# Iters 1098-1101 all completed cleanly (Phase 1 config working normally).
+# Iter 1102 self-play completed (iter_1102.npz saved) but training didn't run.
+# az_latest.pt safe at iter 1101.
+#
+# **Root cause:** Phase 1 config raised peak RAM budget beyond 32G. At K=10
+# steady state with helpers:
+#
+#   - boards buffer:    ~183k pos × 115 × 8 × 8 × 4 bytes (float32)   = ~5.4 GB
+#   - policies buffer:  ~183k pos × 4864 × 4 bytes                     = ~3.6 GB
+#   - helper merge:     +22k pos worth of same (~1.1 GB)
+#   - np.concatenate temporaries: momentarily allocates NEW array =    ~10 GB
+#   - Torch tensor conversion + gradients + optimizer state:            ~5-8 GB
+#   - Python overhead, C++ ext state, misc:                             ~3-5 GB
+#   - PEAK momentary:                                                    ~25-30 GB
+#
+# 32G cgroup limit hit during the np.concatenate step in the training path
+# at [alphazero.py:2154-2158] (concat helper data onto buffer data). This
+# was NOT the same as iter 1027's CUDA OOM (Aug 30, fixed with
+# PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True) — that was GPU memory;
+# this is system RAM.
+#
+# **Auto-resubmit trap (learned lesson):** 629419 (auto-resubmit of 628286)
+# was submitted BY 628286's shell script AT crash time, using an sbatch call
+# that read the then-current train.sh. But SLURM freezes sbatch parameters
+# (including --mem) at submit time. So 629419's --mem was still 32G in
+# SLURM's records, even though we could edit train.sh after the fact for
+# future sbatches. Had to scancel 629419 (and its orphan helpers 629420/
+# 629422) before it wasted ~5h of self-play to re-crash. Waste: only ~40min
+# of iter 1102 self-play + ~40min of orphan helper compute.
+#
+# **Fix (Sep 15 evening, on cluster):**
+#
+#   sed -i.bak_pre_oom_2026_09_15 's/#SBATCH --mem=32G/#SBATCH --mem=64G/' ~/extinction-chess/train.sh
+#   grep "^#SBATCH --mem" ~/extinction-chess/train.sh    # verify
+#   sbatch ~/extinction-chess/train.sh                   # -> job 629491
+#
+# Rationale for 64G: peak RAM estimate of 25-30 GB, so 64G gives ~2× headroom.
+# Not going higher (e.g., 96G) because we want to preserve cluster resource
+# fairness; if 64G still isn't enough we'll revisit.
+#
+# **Diagnostic playbook for future OOMs on Phase 1 (or later) config:**
+#
+#   1. Check whether it's CUDA OOM (Python "CUDA out of memory. Tried to
+#      allocate...") or SLURM cgroup OOM (slurmstepd "Detected 1 oom_kill
+#      event"). Different remedies.
+#   2. For SLURM cgroup: bump --mem. Estimate: sum of buffer float32 +
+#      helper temps + concat temporary + torch tensors. Rough rule:
+#      2× the "positions total" number × 5 KB per position (bytes for
+#      board+policy) gives peak.
+#   3. For CUDA OOM: verify PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+#      is set in train.sh. Reduce batch size if not.
+#
+# **Any auto-resubmit chain after --mem edit:** the FIRST job launched
+# AFTER the sed edit inherits the new --mem. All subsequent auto-resubmits
+# in the chain re-read train.sh at their sbatch time, so they'll also
+# inherit the new value. Only jobs that were already sbatched with the OLD
+# value are stuck. Rule: always check squeue after a train.sh edit to see
+# if any pre-existing jobs need scancel + re-sbatch.
+#
+# **What to watch on 629491:**
+#   - First iter (1102) training step lands ~3h30m after start. If success,
+#     confirm memory headroom is comfortable via `sacct -j 629491 --format=MaxRSS`
+#     which shows peak RAM usage.
+#   - If OOM recurs at 64G: something else is wrong (memory leak? unexpected
+#     torch overhead?). Consider: bump --mem to 96G AND/OR revert K=10 -> K=7
+#     to reduce buffer memory. Full Phase 1 rollback is a last resort.
+#
+# **State at time of writing (Sep 15 evening):**
+#   - 629491 running on thor-slurm1 with --mem=64G
+#   - Iter 1100 auto-benchmark (jobs 628603-628621) verdict PENDING —
+#     first Phase-1 signal (though with mixed old/new buffer)
+#   - Model checkpoint az_latest.pt at iter 1101, safe
+
