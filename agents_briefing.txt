@@ -1,0 +1,197 @@
+================================================================================
+AGENT HANDOFF — SUSPECTED VALUE-TARGET SIGN BUGS
+Date: 2026-09-16
+Reporter: Codex
+Status: RESOLVED 2026-09-16 — verified + fixed + deployed to cluster.
+================================================================================
+
+STATUS UPDATE 2026-09-16 (Claude Opus 4.7 verification pass)
+-----------------------------------------------------------
+Codex's Suspected Bug #1 (active hard-win drilling): CONFIRMED. Fix committed
+as 9ce92eb ("Fix synthetic-drill value-target sign inversion for Black-to-move")
+and pushed to origin/history-planes. SCP'd to cluster and verified via
+`grep -n -A1 "guarantees"` — all three replacement comment blocks landed.
+
+Codex's Suspected Bug #2 (inactive extra-hard + instant-win generators):
+CONFIRMED same pattern. Both fixed in same commit as pre-emptive hardening
+before either curriculum is re-enabled.
+
+Codex's Suspected Bug #3 (build_value_drill_npz.py exporter): CONFIRMED but
+NOT FIXED in this commit. Not currently affecting training (no valdrill.npz
+being loaded). Deferred until valdrill pipeline is re-enabled.
+
+End-to-end verification performed by Claude Opus 4.7 before fix:
+1. alphazero.py:1974 - self-play convention verified side-to-move
+   (`value = outcome if player == 0 else -outcome`)
+2. mcts.cpp:492-498 - C++ MCTS documented + verified side-to-move NN input
+3. alphazero.py:2224-2226 - hw_values flow into terminal_boards/values
+4. alphazero.py:2242-2267 - terminal_values -> tensor -> F.mse_loss with
+   NO intermediate sign conversion
+5. commands.txt:284-286 - documented two-convention split (side-to-move
+   internal / White-perspective display)
+
+Kick-in: 629491 (currently running with cached old code) will continue
+producing buggy hard-win-drill values until wall-time exit. Fix activates
+at next auto-resubmit. No scancel — the ~750 mis-signaled position-updates
+per iter at half-LR are small enough that a few more iters don't
+materially change the ~800-iter-baked-in prior.
+
+See commands.txt SEP 14-15 SESSION SUMMARY for the impact analysis and
+monitoring plan.
+
+Original briefing follows verbatim below.
+================================================================================
+
+Summary
+-------
+The network appears to be trained and consumed as a SIDE-TO-MOVE-perspective
+value function:
+
+    +1 = the player to move eventually wins
+    -1 = the player to move eventually loses
+
+However, the synthetic instant-win generators produce WHITE-perspective
+values:
+
+    +1 when White is to move and has the forced/immediate win
+    -1 when Black is to move and has the forced/immediate win
+
+For these generators, the current player is known to have an immediate winning
+move. If the rest of the pipeline's side-to-move convention is intentional,
+the target should therefore be +1 for BOTH White-to-move and Black-to-move
+examples. The active hard-win drill currently gives every Black-to-move win a
+-1 target. This looks like a real sign bug, not merely a misleading comment.
+
+
+Evidence for the side-to-move convention
+----------------------------------------
+1. Main self-play target construction converts the White-relative game outcome
+   into a side-to-move-relative label for every recorded state:
+
+   src/alphazero.py:1972-1977 (active C++ batched path)
+
+       value = outcome if player == 0 else -outcome
+
+   Here outcome is +1 for a White win and -1 for a Black win. Therefore a
+   Black-to-move position in a game Black wins receives +1.
+
+   The Python parallel and sequential paths do the same conversion at
+   src/alphazero.py:1996-2001 and 2017-2021.
+
+2. C++ MCTS explicitly documents that NN values are current-player-relative,
+   then converts them to White-relative values for internal tree backup:
+
+   src/cpp/mcts.cpp:482-502, especially 492-498
+
+       // Value is from current player's perspective, convert to white's
+       if (nodes_[node_idx].game.side == WHITE) white_value = value;
+       else white_value = -value;
+
+3. commands.txt:284-286 also says the model internally outputs
+   current-player-perspective values and that the positional-evaluation UI
+   converts them for White-perspective display.
+
+
+Suspected bug #1 — active hard-win drilling
+-------------------------------------------
+The currently configured training job has:
+
+   src/run_training.py:47
+       hard_win_positions=300
+
+The generator first proves that `current` has one or more moves that immediately
+end the game with `gc.winner == current`:
+
+   src/alphazero.py:1695-1701
+
+It then comments that the label is from the current player's perspective, but
+assigns a White-perspective sign:
+
+   src/alphazero.py:1726-1727
+
+       # Value: +1 from current player's perspective
+       value = 1.0 if current == Color.WHITE else -1.0
+
+Because `current` is the forced winner, the apparent correct
+side-to-move-relative label is simply:
+
+       value = 1.0
+
+Impact estimate: up to roughly half of the 300 synthetic hard-win positions per
+iteration may have the wrong value target, depending on the generator's color
+distribution. They are drilled for 5 epochs. The policy targets still appear
+valid. This could bias the value head toward White and may be relevant to the
+persistent White self-play skew, but that causal connection is only a
+hypothesis and should be tested rather than assumed.
+
+
+Suspected bug #2 — inactive sibling generators
+------------------------------------------------
+The same pattern occurs in:
+
+   src/alphazero.py:1657  generate_extra_hard_win_positions()
+   src/alphazero.py:1789  generate_instant_win_positions()
+
+Both functions select positions where the current player has the winning move,
+but return +1 for White and -1 for Black. They appear disabled in the current
+configuration (`extra_hard_win_positions=0`, and instant-win drilling is
+commented out), so they are not the immediate active issue. They should still
+be corrected or guarded before either curriculum is re-enabled.
+
+
+Suspected bug #3 — hand-curated value-drill export
+--------------------------------------------------
+The positional-evaluation dataset intentionally stores values from WHITE's
+perspective (commands.txt:464 and 499-500). But the exporter writes that value
+directly into the replay-buffer `values` array without converting it to the
+side-to-move convention:
+
+   tools/build_value_drill_npz.py:121
+
+       values.append(float(entry["value"]))
+
+If these NPZ files are fed through the same training loader as self-play data,
+the export should apparently convert as follows:
+
+       train_value = white_value if to_move == WHITE else -white_value
+
+There is a local `dataset/iter_9999_valdrill.npz` and its JSON currently has 24
+entries (12 White-to-move and 12 Black-to-move, all stored as White-perspective
++1). I cannot confirm from this workspace whether that exact shard is still on
+the cluster. It is tiny, so its numerical impact would be small, but the format
+contract should be clarified before larger curated datasets are deployed.
+
+
+Recommended verification before editing
+---------------------------------------
+1. Confirm there is no later conversion of synthetic drill values between
+   generation and the MSE at src/alphazero.py:2242-2268. I found none:
+   `terminal_values` is tensorized directly and passed to F.mse_loss.
+
+2. Construct two minimal mirrored test positions:
+   - White to move with an immediate extinction win.
+   - Black to move with an immediate extinction win.
+   Assert that the generated training value is +1 for both.
+
+3. Assert the end-to-end convention with completed games:
+   - A recorded state where the side to move eventually wins => +1.
+   - A recorded state where the side to move eventually loses => -1.
+
+4. Audit any persistent `iter_*_valdrill.npz` files on the cluster and rebuild
+   them after fixing the exporter if they contain White-perspective labels.
+
+5. Check historical commits/docs in case the project intentionally changed
+   value conventions at some point. Current training and current C++ MCTS are
+   internally consistent with side-to-move values; the drill generators are
+   the outliers I found.
+
+
+Possible minimal fix (for review, not applied)
+----------------------------------------------
+- In all three synthetic generators, use `value = 1.0`, because each selected
+  position is defined as an immediate win for the current player.
+- In the hand-curated exporter, retain White-relative values in the human-facing
+  JSON/UI, but convert to side-to-move perspective when building the training
+  NPZ.
+- Add regression tests covering both colors so the two value conventions cannot
+  silently become mixed again.

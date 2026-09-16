@@ -4465,3 +4465,91 @@ SEP 14-15 2026 SESSION SUMMARY — PHASE 1 DATA VOLUME BUMP (K=10, 600/300 GAMES
 #     first Phase-1 signal (though with mixed old/new buffer)
 #   - Model checkpoint az_latest.pt at iter 1101, safe
 
+
+## Sep 16 value-target sign fix (found by Codex, verified + shipped by Opus 4.7)
+
+# **What was wrong:** Three synthetic drill-position generators in alphazero.py
+# were writing WHITE-perspective values (+1 for White-wins, -1 for Black-wins)
+# into training data that expects SIDE-TO-MOVE-perspective values (+1 = current
+# player wins). In each of these branches the current player is already
+# guaranteed to be the winner, so the correct target is +1 regardless of color.
+#
+# Convention split (unchanged, documented at commands.txt:284-286):
+#   - NN training targets, NN output, C++ MCTS internal: SIDE-TO-MOVE perspective
+#     (+1 = current player wins). Confirmed at alphazero.py:1974 and mcts.cpp:492-498.
+#   - Human-facing displays (positional_eval GUI, tournament output, benchmark
+#     logs): WHITE perspective (+1 = White winning).
+#
+# **Locations fixed in commit 9ce92eb:**
+#   - alphazero.py:1657 (was 1657 line #) — generate_extra_hard_win_positions.
+#     INACTIVE (extra_hard_win_positions=0 in run_training.py); latent bug.
+#   - alphazero.py:1727 (was 1727 line #) — generate_hard_win_positions.
+#     ★ ACTIVE. hard_win_positions=300 per iter. THE BUG THAT WAS AFFECTING
+#     TRAINING.
+#   - alphazero.py:1789 (was 1789 line #) — generate_instant_win_positions.
+#     INACTIVE (commented out in run_training.py); latent bug.
+#
+# All three changed from:
+#   value = 1.0 if current == Color.WHITE else -1.0
+# to:
+#   value = 1.0
+# with explanatory comments preserving the convention rationale.
+#
+# **NOT fixed** (separate tool, different pipeline, not currently active):
+#   - tools/build_value_drill_npz.py:121 — writes White-perspective values from
+#     the human-curated value-drill JSON into training NPZ without converting.
+#     No valdrill.npz shards being loaded on the cluster currently. Fix when
+#     the valdrill pipeline is re-enabled.
+#
+# **Impact of the active bug (line 1727):**
+#   - Been in training since Phase 11 (~iter 291) - roughly 800 iters of
+#     drilling under the buggy target.
+#   - ~150 Black-to-move drill positions per iter received value=-1 when the
+#     correct side-to-move target was +1 (current player has forced win).
+#   - drilling_lr_factor=0.5 (half of main LR), drilling_epochs=5 -> ~750
+#     mis-labelled position-updates per iter at half-LR.
+#   - vs ~258k main position-updates per iter: ~0.3% of gradient work carried
+#     inverted signal. Small per-iter but persistent over 800 iters.
+#   - Likely contributor to structural W-bias documented in memory
+#     [[wbias_lineage_finding]]. Model was effectively taught "Black-to-move
+#     positions where Black has an immediate win are actually losing" -
+#     degrading Black-side play consistently.
+#
+# **Deployment sequence (Sep 16, executed):**
+#
+#   git add src/alphazero.py
+#   git commit -m "Fix synthetic-drill value-target sign inversion ..."   # 9ce92eb
+#   git push origin history-planes
+#   scp -i ~/.ssh/id_ed25519 <local>/src/alphazero.py \
+#       h74liang@wato-login1.ext.watonomous.ca:~/extinction-chess/src/alphazero.py
+#
+# Verify on cluster (should show `value = 1.0` on lines 1663, 1739, 1805):
+#   grep -n "value = 1.0 if\|^                    value = 1.0$\|^                value = 1.0$" ~/extinction-chess/src/alphazero.py
+#
+# Kick-in: 629491 (running with cached old code) continues buggy until its
+# wall-time exit. Next auto-resubmit picks up the fixed code. NO scancel —
+# a few more buggy iters don't materially change the 800-iter-baked-in
+# prior.
+#
+# **What to watch after fix lands:**
+#   - W-skew in self-play should drift downward over 10-30 iters as model
+#     unlearns "Black-winning positions are losing." May take longer than that;
+#     the mis-labelled data is small per iter but the prior is deep.
+#   - Value loss on Black-to-move drill positions may spike briefly (NN
+#     predictions on those positions were tuned negative under the buggy
+#     target, correct target is +1 -> larger MSE until re-learn).
+#   - Long-term: iter 1120+ benchmark (approximately) is the first where
+#     the K=10 buffer has fully aged out drill-adapted data. Watch for
+#     W-skew normalization and (hopefully) H2H recovery vs recent peers
+#     (iter 1080/1090/1100 mid-range weakness).
+#
+# **Compounding effect of two active fixes**: Phase 1 config bump (Sep 15,
+# commit 2eeb743) + value-sign fix (Sep 16, commit 9ce92eb) are landing in
+# nearby iters. Confounds attribution: if iter 1110+ improves, we won't
+# be able to cleanly separate "more data + K=10 helped" from "correct
+# Black-side drill signal helped." Accept the confound - both are
+# unambiguously correct changes.
+#
+# **See also:** agents_briefing.txt for the original Codex handoff and
+# the STATUS UPDATE 2026-09-16 block acknowledging resolution.
+
