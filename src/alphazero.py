@@ -1654,7 +1654,13 @@ def generate_extra_hard_win_positions(num_positions: int, max_random_moves: int 
                     for wm in winning_moves:
                         policy[move_to_index(wm)] = 1.0
                     policy /= policy.sum()
-                    value = 1.0 if current == Color.WHITE else -1.0
+                    # Side-to-move perspective: this branch guarantees `current`
+                    # is the winner, so the target is +1 regardless of color.
+                    # Prior code wrote a White-perspective value (+1 for White,
+                    # -1 for Black) into a side-to-move-labelled training set,
+                    # inverting the target for Black-to-move examples. Fixed
+                    # 2026-09-16.
+                    value = 1.0
 
                     boards.append(board)
                     policies.append(policy)
@@ -1723,8 +1729,14 @@ def generate_hard_win_positions(num_positions: int, max_random_moves: int = 200)
                         policy[move_to_index(wm)] = 1.0
                     policy /= policy.sum()
 
-                    # Value: +1 from current player's perspective
-                    value = 1.0 if current == Color.WHITE else -1.0
+                    # Side-to-move perspective: this branch guarantees `current`
+                    # is the winner (line 1700: `gc.winner == current`), so the
+                    # target is +1 regardless of color. Prior code wrote a
+                    # White-perspective value (+1 for White, -1 for Black) into a
+                    # side-to-move-labelled training set, inverting the target
+                    # for Black-to-move examples. Fixed 2026-09-16 (bug present
+                    # since Phase 11 introduction at iter 291).
+                    value = 1.0
 
                     boards.append(board)
                     policies.append(policy)
@@ -1785,8 +1797,12 @@ def generate_instant_win_positions(num_positions: int, max_random_moves: int = 2
                     policy[move_to_index(wm)] = 1.0
                 policy /= policy.sum()
 
-                # Value: +1 from WHITE's perspective
-                value = 1.0 if game.current_player == Color.WHITE else -1.0
+                # Side-to-move perspective: this branch guarantees the current
+                # player is the winner (gc.winner == game.current_player check
+                # above), so the target is +1 regardless of color. Prior code
+                # wrote a White-perspective value which inverted the target for
+                # Black-to-move examples. Fixed 2026-09-16.
+                value = 1.0
 
                 boards.append(board)
                 policies.append(policy)
