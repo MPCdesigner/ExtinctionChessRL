@@ -49,7 +49,7 @@ if __name__ == "__main__":
         extra_hard_epochs=5,
         extra_hard_lr_factor=0.025,
         replay_buffer_dir="../replay_buffer",
-        replay_buffer_size=10,  # rolling window of last 10 iterations (bumped 5->10 to close data-window gap vs AZ practice)
+        replay_buffer_size=8,  # rolling window of last 8 iterations. Bumped 5->10 Sep 15 (Phase 1) to close AZ-practice data-window gap, then reduced 10->8 Sep 18 after CUDA OOM at iter 1117 training: 250k-pos training set exceeded 24GB 3090 capacity. K=8 gives ~185k buffer + ~22k helpers = ~207k peak, ~5GB GPU headroom.
         # ── Decoupled helper jobs (recency injection) ──
         # Each iter, main sbatches helpers_per_iter helpers that each generate
         # 200 games against az_latest.pt. Main consumes the resulting .npz files
